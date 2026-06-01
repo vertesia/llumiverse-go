@@ -258,6 +258,30 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 	if got := openAIResponsesTurn((*openAIResponsesConversationState)(nil)); got != 0 {
 		t.Fatalf("nil turn = %d", got)
 	}
+	stored := openAIResponsesConversationState{
+		Items: responses.ResponseInputParam{
+			responses.ResponseInputItemParamOfMessage("old question", responses.EasyInputMessageRoleUser),
+		},
+		Turn: 6,
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored any
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if got := openAIResponsesTurn(restored); got != 6 {
+		t.Fatalf("json-restored turn = %d", got)
+	}
+	restoredInput := openAIResponsesInput(restored, responses.ResponseInputParam{
+		responses.ResponseInputItemParamOfMessage("new question", responses.EasyInputMessageRoleUser),
+	}, true)
+	restoredTexts := openAIResponseInputTexts(restoredInput)
+	if !containsText(restoredTexts, "old question") || !containsText(restoredTexts, "new question") {
+		t.Fatalf("json-restored input texts = %#v", restoredTexts)
+	}
 	if got := completionResultsToText([]CompletionResult{
 		{Type: ResultTypeText, Value: "hello"},
 		{Type: ResultTypeJSON, Value: `{"ok":true}`},

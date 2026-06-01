@@ -955,6 +955,63 @@ func TestBedrockConversationToolBlocksBecomeTextWithoutTools(t *testing.T) {
 	}
 }
 
+func TestBedrockExecuteUsesJSONRestoredConversation(t *testing.T) {
+	t.Parallel()
+
+	stored := bedrockPrompt{
+		System: []brtypes.SystemContentBlock{&brtypes.SystemContentBlockMemberText{Value: "stored system"}},
+		Messages: []brtypes.Message{
+			{
+				Role:    brtypes.ConversationRoleUser,
+				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: "old question"}},
+			},
+			{
+				Role:    brtypes.ConversationRoleAssistant,
+				Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: "old answer"}},
+			},
+		},
+		Turn: 4,
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored any
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := &fakeBedrockRuntime{}
+	driver := NewBedrockDriverWithClient(BedrockOptions{Region: "us-east-1"}, runtime, nil)
+	resp, err := driver.Execute(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "new question"}}, ExecutionOptions{
+		Model:        "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		Conversation: restored,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.got == nil {
+		t.Fatal("Converse was not called")
+	}
+	if len(runtime.got.System) != 1 {
+		t.Fatalf("system = %#v", runtime.got.System)
+	}
+	system, ok := runtime.got.System[0].(*brtypes.SystemContentBlockMemberText)
+	if !ok || system.Value != "stored system" {
+		t.Fatalf("system = %#v", runtime.got.System)
+	}
+	texts := bedrockConversationTexts(bedrockPrompt{Messages: runtime.got.Messages})
+	for _, want := range []string{"old question", "old answer", "new question"} {
+		if !containsText(texts, want) {
+			t.Fatalf("messages = %#v", runtime.got.Messages)
+		}
+	}
+	conversation, ok := resp.Conversation.(bedrockPrompt)
+	if !ok || conversation.Turn != 5 {
+		t.Fatalf("conversation = %#v", resp.Conversation)
+	}
+}
+
 func TestBedrockImageGenerationUsesInvokeModel(t *testing.T) {
 	t.Parallel()
 

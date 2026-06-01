@@ -812,12 +812,335 @@ func bedrockConversationInput(conversation any, prompt bedrockPrompt) bedrockPro
 		if value != nil {
 			out = *value
 		}
+	case map[string]any:
+		if decoded, ok := decodeStoredBedrockConversation(value); ok {
+			out = decoded
+		}
+	case []any:
+		if messages, ok := bedrockStoredMessages(value); ok {
+			out.Messages = append(out.Messages, messages...)
+		}
 	}
 	if len(prompt.System) > 0 {
 		out.System = prompt.System
 	}
 	out.Messages = fixBedrockOrphanedToolUse(mergeBedrockMessages(append(out.Messages, prompt.Messages...)))
 	return out
+}
+
+// decodeStoredBedrockConversation rebuilds SDK union values from JSON-shaped
+// conversation state. It accepts both encoding/json's native Go struct shape
+// ("Messages", "Value") and the lower-camel provider payload shape.
+func decodeStoredBedrockConversation(conversation map[string]any) (bedrockPrompt, bool) {
+	out := bedrockPrompt{}
+	if raw, ok := bedrockMapLookup(conversation, "messages", "Messages"); ok {
+		if messages, ok := bedrockStoredMessages(raw); ok {
+			out.Messages = messages
+		}
+	}
+	if raw, ok := bedrockMapLookup(conversation, "system", "System"); ok {
+		if system, ok := bedrockStoredSystemBlocks(raw); ok {
+			out.System = system
+		}
+	}
+	if raw, ok := bedrockMapLookup(conversation, "turn", "Turn"); ok {
+		if turn, ok := bedrockIntValue(raw); ok {
+			out.Turn = turn
+		}
+	}
+	return out, len(out.Messages) > 0 || len(out.System) > 0 || out.Turn != 0
+}
+
+func bedrockStoredMessages(raw any) ([]brtypes.Message, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]brtypes.Message, 0, len(items))
+	for _, item := range items {
+		value, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		role := brtypes.ConversationRole(bedrockStringFromMap(value, "role", "Role"))
+		content, _ := bedrockStoredContentBlocks(bedrockValueFromMap(value, "content", "Content"))
+		if len(content) == 0 {
+			continue
+		}
+		if role == "" {
+			role = brtypes.ConversationRoleUser
+		}
+		out = append(out, brtypes.Message{Role: role, Content: content})
+	}
+	return out, true
+}
+
+func bedrockStoredSystemBlocks(raw any) ([]brtypes.SystemContentBlock, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]brtypes.SystemContentBlock, 0, len(items))
+	for _, item := range items {
+		value, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text := bedrockStringFromMap(value, "text", "Text", "Value"); text != "" {
+			out = append(out, &brtypes.SystemContentBlockMemberText{Value: text})
+			continue
+		}
+		if rawValue, ok := bedrockMapLookup(value, "cachePoint", "CachePoint", "Value"); ok {
+			if cache, ok := bedrockStoredCachePoint(rawValue); ok {
+				out = append(out, &brtypes.SystemContentBlockMemberCachePoint{Value: cache})
+			}
+		}
+	}
+	return out, true
+}
+
+func bedrockStoredContentBlocks(raw any) ([]brtypes.ContentBlock, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]brtypes.ContentBlock, 0, len(items))
+	for _, item := range items {
+		if block := bedrockStoredContentBlock(item); block != nil {
+			out = append(out, block)
+		}
+	}
+	return out, true
+}
+
+func bedrockStoredContentBlock(raw any) brtypes.ContentBlock {
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if text := bedrockStringFromMap(value, "text", "Text"); text != "" {
+		return &brtypes.ContentBlockMemberText{Value: text}
+	}
+	if rawValue, ok := bedrockMapLookup(value, "toolUse", "ToolUse"); ok {
+		if toolUse, ok := bedrockStoredToolUseBlock(rawValue); ok {
+			return &brtypes.ContentBlockMemberToolUse{Value: toolUse}
+		}
+	}
+	if rawValue, ok := bedrockMapLookup(value, "toolResult", "ToolResult"); ok {
+		if toolResult, ok := bedrockStoredToolResultBlock(rawValue); ok {
+			return &brtypes.ContentBlockMemberToolResult{Value: toolResult}
+		}
+	}
+	if _, ok := bedrockMapLookup(value, "image", "Image"); ok {
+		return &brtypes.ContentBlockMemberText{Value: conversationImagePlaceholder}
+	}
+	if _, ok := bedrockMapLookup(value, "document", "Document"); ok {
+		return &brtypes.ContentBlockMemberText{Value: conversationDocumentPlaceholder}
+	}
+	if _, ok := bedrockMapLookup(value, "video", "Video"); ok {
+		return &brtypes.ContentBlockMemberText{Value: conversationVideoPlaceholder}
+	}
+	if rawValue, ok := bedrockMapLookup(value, "cachePoint", "CachePoint"); ok {
+		if cache, ok := bedrockStoredCachePoint(rawValue); ok {
+			return &brtypes.ContentBlockMemberCachePoint{Value: cache}
+		}
+	}
+	if rawValue, ok := bedrockMapLookup(value, "Value"); ok {
+		return bedrockStoredContentBlockValue(rawValue)
+	}
+	return nil
+}
+
+func bedrockStoredContentBlockValue(raw any) brtypes.ContentBlock {
+	if text, ok := raw.(string); ok {
+		return &brtypes.ContentBlockMemberText{Value: text}
+	}
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if _, ok := bedrockMapLookup(value, "ToolUseId", "toolUseId"); ok {
+		if toolUse, ok := bedrockStoredToolUseBlock(value); ok {
+			return &brtypes.ContentBlockMemberToolUse{Value: toolUse}
+		}
+	}
+	if _, ok := bedrockMapLookup(value, "Content", "content"); ok {
+		if toolResult, ok := bedrockStoredToolResultBlock(value); ok {
+			return &brtypes.ContentBlockMemberToolResult{Value: toolResult}
+		}
+	}
+	if text := bedrockStringFromMap(value, "Text", "text"); text != "" {
+		return &brtypes.ContentBlockMemberText{Value: text}
+	}
+	if _, ok := bedrockMapLookup(value, "Name", "name"); ok {
+		return &brtypes.ContentBlockMemberText{Value: conversationDocumentPlaceholder}
+	}
+	if _, ok := bedrockMapLookup(value, "Source", "source"); ok {
+		if bedrockStoredLooksLikeVideo(value) {
+			return &brtypes.ContentBlockMemberText{Value: conversationVideoPlaceholder}
+		}
+		return &brtypes.ContentBlockMemberText{Value: conversationImagePlaceholder}
+	}
+	if cache, ok := bedrockStoredCachePoint(value); ok {
+		return &brtypes.ContentBlockMemberCachePoint{Value: cache}
+	}
+	return nil
+}
+
+func bedrockStoredToolUseBlock(raw any) (brtypes.ToolUseBlock, bool) {
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return brtypes.ToolUseBlock{}, false
+	}
+	input := bedrockValueFromMap(value, "input", "Input")
+	if input == nil {
+		input = map[string]any{}
+	}
+	return brtypes.ToolUseBlock{
+		Input:     brdoc.NewLazyDocument(input),
+		Name:      aws.String(bedrockStringFromMap(value, "name", "Name")),
+		ToolUseId: aws.String(bedrockStringFromMap(value, "toolUseId", "ToolUseId")),
+		Type:      brtypes.ToolUseType(bedrockStringFromMap(value, "type", "Type")),
+	}, true
+}
+
+func bedrockStoredToolResultBlock(raw any) (brtypes.ToolResultBlock, bool) {
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return brtypes.ToolResultBlock{}, false
+	}
+	content, _ := bedrockStoredToolResultContentBlocks(bedrockValueFromMap(value, "content", "Content"))
+	out := brtypes.ToolResultBlock{
+		Content:   content,
+		ToolUseId: aws.String(bedrockStringFromMap(value, "toolUseId", "ToolUseId")),
+		Status:    brtypes.ToolResultStatus(bedrockStringFromMap(value, "status", "Status")),
+	}
+	if blockType := bedrockStringFromMap(value, "type", "Type"); blockType != "" {
+		out.Type = aws.String(blockType)
+	}
+	return out, true
+}
+
+func bedrockStoredToolResultContentBlocks(raw any) ([]brtypes.ToolResultContentBlock, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make([]brtypes.ToolResultContentBlock, 0, len(items))
+	for _, item := range items {
+		if block := bedrockStoredToolResultContentBlock(item); block != nil {
+			out = append(out, block)
+		}
+	}
+	return out, true
+}
+
+func bedrockStoredToolResultContentBlock(raw any) brtypes.ToolResultContentBlock {
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return nil
+	}
+	if text := bedrockStringFromMap(value, "text", "Text"); text != "" {
+		return &brtypes.ToolResultContentBlockMemberText{Value: text}
+	}
+	if rawValue, ok := bedrockMapLookup(value, "json", "Json"); ok {
+		return &brtypes.ToolResultContentBlockMemberJson{Value: brdoc.NewLazyDocument(rawValue)}
+	}
+	if _, ok := bedrockMapLookup(value, "image", "Image"); ok {
+		return &brtypes.ToolResultContentBlockMemberText{Value: conversationImagePlaceholder}
+	}
+	if _, ok := bedrockMapLookup(value, "document", "Document"); ok {
+		return &brtypes.ToolResultContentBlockMemberText{Value: conversationDocumentPlaceholder}
+	}
+	if _, ok := bedrockMapLookup(value, "video", "Video"); ok {
+		return &brtypes.ToolResultContentBlockMemberText{Value: conversationVideoPlaceholder}
+	}
+	if rawValue, ok := bedrockMapLookup(value, "Value"); ok {
+		if text, ok := rawValue.(string); ok {
+			return &brtypes.ToolResultContentBlockMemberText{Value: text}
+		}
+		if valueMap, ok := rawValue.(map[string]any); ok {
+			if _, ok := bedrockMapLookup(valueMap, "Name", "name"); ok {
+				return &brtypes.ToolResultContentBlockMemberText{Value: conversationDocumentPlaceholder}
+			}
+			if _, ok := bedrockMapLookup(valueMap, "Source", "source"); ok {
+				if bedrockStoredLooksLikeVideo(valueMap) {
+					return &brtypes.ToolResultContentBlockMemberText{Value: conversationVideoPlaceholder}
+				}
+				return &brtypes.ToolResultContentBlockMemberText{Value: conversationImagePlaceholder}
+			}
+			return &brtypes.ToolResultContentBlockMemberJson{Value: brdoc.NewLazyDocument(valueMap)}
+		}
+	}
+	return nil
+}
+
+func bedrockStoredCachePoint(raw any) (brtypes.CachePointBlock, bool) {
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return brtypes.CachePointBlock{}, false
+	}
+	cacheType := bedrockStringFromMap(value, "type", "Type")
+	if cacheType == "" {
+		return brtypes.CachePointBlock{}, false
+	}
+	return brtypes.CachePointBlock{
+		Type: brtypes.CachePointType(cacheType),
+		Ttl:  brtypes.CacheTTL(bedrockStringFromMap(value, "ttl", "Ttl")),
+	}, true
+}
+
+func bedrockStoredLooksLikeVideo(value map[string]any) bool {
+	switch strings.ToLower(bedrockStringFromMap(value, "format", "Format")) {
+	case "flv", "mkv", "mov", "mp4", "mpeg", "mpg", "three_gp", "webm", "wmv":
+		return true
+	default:
+		return false
+	}
+}
+
+func bedrockMapLookup(value map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if raw, ok := value[key]; ok {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+func bedrockValueFromMap(value map[string]any, keys ...string) any {
+	raw, _ := bedrockMapLookup(value, keys...)
+	return raw
+}
+
+func bedrockStringFromMap(value map[string]any, keys ...string) string {
+	raw, ok := bedrockMapLookup(value, keys...)
+	if !ok {
+		return ""
+	}
+	text, _ := raw.(string)
+	return text
+}
+
+func bedrockIntValue(raw any) (int, bool) {
+	switch value := raw.(type) {
+	case int:
+		return value, true
+	case int32:
+		return int(value), true
+	case int64:
+		return int(value), true
+	case float64:
+		return int(value), true
+	case json.Number:
+		n, err := value.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 // appendBedrockResponseToConversation appends the model's response message to

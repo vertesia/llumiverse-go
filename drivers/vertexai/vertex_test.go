@@ -240,6 +240,69 @@ func TestVertexGeminiConvertsToolConversationAndThinkingConfig(t *testing.T) {
 	}
 }
 
+func TestVertexGeminiExecuteUsesJSONRestoredConversation(t *testing.T) {
+	t.Parallel()
+
+	stored := geminiPrompt{
+		System: &geminiContent{Parts: []geminiPart{{Text: "stored system"}}},
+		Contents: []geminiContent{
+			{Role: "user", Parts: []geminiPart{{Text: "old question"}}},
+			{Role: "model", Parts: []geminiPart{{Text: "old answer"}}},
+		},
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored any
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+
+	var got map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatal(err)
+		}
+		_, _ = w.Write([]byte(`{
+			"candidates":[{
+				"finishReason":"STOP",
+				"content":{"role":"model","parts":[{"text":"ok"}]}
+			}]
+		}`))
+	}))
+	defer server.Close()
+
+	driver, err := NewVertexAIDriver(VertexAIOptions{
+		Project:     "project-1",
+		Region:      "us-central1",
+		BaseURL:     server.URL,
+		TokenSource: oauth2.StaticTokenSource(&oauth2.Token{AccessToken: "vertex-token"}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = driver.Execute(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "new question"}}, ExecutionOptions{
+		Model:        "gemini-test",
+		Conversation: restored,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	system := got["systemInstruction"].(map[string]any)
+	systemParts := system["parts"].([]any)
+	if systemParts[0].(map[string]any)["text"] != "stored system" {
+		t.Fatalf("systemInstruction = %#v", got["systemInstruction"])
+	}
+	texts := geminiPayloadTexts(got["contents"].([]any))
+	for _, want := range []string{"old question", "old answer", "new question"} {
+		if !vertexContainsText(texts, want) {
+			t.Fatalf("contents = %#v", got["contents"])
+		}
+	}
+}
+
 func TestVertexGeminiPromptFormattingAndHelperBranches(t *testing.T) {
 	t.Parallel()
 
@@ -896,6 +959,39 @@ func TestVertexHTTPTimeoutConfiguration(t *testing.T) {
 	if got := driver.httpClient(HTTPTimeoutOptions{}); got != driver.client {
 		t.Fatal("empty per-request timeout should reuse the driver client")
 	}
+}
+
+func geminiPayloadTexts(contents []any) []string {
+	var out []string
+	for _, rawContent := range contents {
+		content, ok := rawContent.(map[string]any)
+		if !ok {
+			continue
+		}
+		parts, ok := content["parts"].([]any)
+		if !ok {
+			continue
+		}
+		for _, rawPart := range parts {
+			part, ok := rawPart.(map[string]any)
+			if !ok {
+				continue
+			}
+			if text, ok := part["text"].(string); ok {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
+}
+
+func vertexContainsText(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {

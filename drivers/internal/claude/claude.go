@@ -420,11 +420,31 @@ func claudeConversationInput(conversation any, prompt claudePrompt) claudePrompt
 		if value != nil {
 			out = *value
 		}
+	case []claudeMessage:
+		out.Messages = append(out.Messages, value...)
+	case map[string]any:
+		var decoded claudePrompt
+		if decodeStoredConversation(value, &decoded) {
+			out = decoded
+		}
+	case []any:
+		var decoded []claudeMessage
+		if decodeStoredConversation(value, &decoded) {
+			out.Messages = append(out.Messages, decoded...)
+		}
 	}
 	out.System = append(out.System, prompt.System...)
 	out.Messages = append(out.Messages, prompt.Messages...)
 	out.Messages = mergeConsecutiveClaudeUserMessages(sanitizeClaudeMessages(out.Messages))
 	return out
+}
+
+func decodeStoredConversation[T any](conversation any, target *T) bool {
+	data, err := json.Marshal(conversation)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, target) == nil
 }
 
 // appendClaudeResponseToConversation appends the assistant turn from a

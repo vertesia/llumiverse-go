@@ -687,12 +687,30 @@ func geminiConversationInput(conversation any, prompt geminiPrompt) geminiPrompt
 		}
 	case []geminiContent:
 		out.Contents = append(out.Contents, value...)
+	case map[string]any:
+		var decoded geminiPrompt
+		if decodeStoredConversation(value, &decoded) {
+			out = decoded
+		}
+	case []any:
+		var decoded []geminiContent
+		if decodeStoredConversation(value, &decoded) {
+			out.Contents = append(out.Contents, decoded...)
+		}
 	}
 	if prompt.System != nil {
 		out.System = prompt.System
 	}
 	out.Contents = mergeGeminiRoles(append(out.Contents, prompt.Contents...))
 	return out
+}
+
+func decodeStoredConversation[T any](conversation any, target *T) bool {
+	data, err := json.Marshal(conversation)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, target) == nil
 }
 
 // appendGeminiResponseToConversation appends the model's response turn to the

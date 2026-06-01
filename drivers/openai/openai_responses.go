@@ -402,6 +402,14 @@ func openAIResponsesInput(conversation any, prompt responses.ResponseInputParam,
 		if value != nil {
 			out = append(out, value.Items...)
 		}
+	case map[string]any:
+		if items, ok := openAIResponsesStoredItemsFromState(value); ok {
+			out = append(out, items...)
+		}
+	case []any:
+		if items, ok := openAIResponsesStoredInput(value); ok {
+			out = append(out, items...)
+		}
 	}
 	out = append(out, prompt...)
 	out = fixOpenAIOrphanedToolUse(out)
@@ -463,8 +471,154 @@ func openAIResponsesTurn(conversation any) int {
 		if value != nil {
 			return value.Turn
 		}
+	case map[string]any:
+		if turn, ok := openAIResponsesStoredInt(value, "Turn", "turn"); ok {
+			return turn
+		}
 	}
 	return 0
+}
+
+// openAIResponsesStoredItemsFromState falls back to structural decoding for
+// JSON-parsed SDK union items, whose concrete Go union type is otherwise lost.
+func openAIResponsesStoredItemsFromState(value map[string]any) (responses.ResponseInputParam, bool) {
+	var decoded openAIResponsesConversationState
+	if decodeStoredConversation(value, &decoded) {
+		return decoded.Items, true
+	}
+	if raw, ok := openAIResponsesStoredMapLookup(value, "Items", "items"); ok {
+		return openAIResponsesStoredInput(raw)
+	}
+	return nil, false
+}
+
+func openAIResponsesStoredInput(raw any) (responses.ResponseInputParam, bool) {
+	var decoded responses.ResponseInputParam
+	if decodeStoredConversation(raw, &decoded) {
+		return decoded, true
+	}
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make(responses.ResponseInputParam, 0, len(items))
+	for _, item := range items {
+		if decoded, ok := openAIResponsesStoredItem(item); ok {
+			out = append(out, decoded)
+		}
+	}
+	return out, true
+}
+
+func openAIResponsesStoredItem(raw any) (responses.ResponseInputItemUnionParam, bool) {
+	value, ok := raw.(map[string]any)
+	if !ok {
+		return responses.ResponseInputItemUnionParam{}, false
+	}
+	itemType := openAIResponsesStoredString(value, "type")
+	switch itemType {
+	case "function_call":
+		return responses.ResponseInputItemParamOfFunctionCall(
+			openAIResponsesStoredString(value, "arguments"),
+			openAIResponsesStoredString(value, "call_id", "callID", "CallID"),
+			openAIResponsesStoredString(value, "name"),
+		), true
+	case "function_call_output":
+		return responses.ResponseInputItemParamOfFunctionCallOutput(
+			openAIResponsesStoredString(value, "call_id", "callID", "CallID"),
+			openAIResponsesStoredString(value, "output"),
+		), true
+	}
+	if _, ok := openAIResponsesStoredMapLookup(value, "role", "Role"); ok {
+		role := responses.EasyInputMessageRole(openAIResponsesStoredString(value, "role", "Role"))
+		rawContent, _ := openAIResponsesStoredMapLookup(value, "content", "Content")
+		if text, ok := rawContent.(string); ok {
+			return responses.ResponseInputItemParamOfMessage(text, role), true
+		}
+		if parts, ok := openAIResponsesStoredContentParts(rawContent); ok {
+			return responses.ResponseInputItemParamOfMessage(parts, role), true
+		}
+	}
+	return responses.ResponseInputItemUnionParam{}, false
+}
+
+func openAIResponsesStoredContentParts(raw any) (responses.ResponseInputMessageContentListParam, bool) {
+	items, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	out := make(responses.ResponseInputMessageContentListParam, 0, len(items))
+	for _, item := range items {
+		value, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if text := openAIResponsesStoredString(value, "text", "Text"); text != "" {
+			out = append(out, responses.ResponseInputContentParamOfInputText(text))
+			continue
+		}
+		imageURL := openAIResponsesStoredString(value, "image_url", "imageURL", "ImageURL")
+		if imageURL == "" {
+			continue
+		}
+		detail := responses.ResponseInputImageDetail(openAIResponsesStoredString(value, "detail", "Detail"))
+		if detail == "" {
+			detail = responses.ResponseInputImageDetailAuto
+		}
+		part := responses.ResponseInputContentParamOfInputImage(detail)
+		part.OfInputImage.ImageURL = param.NewOpt(imageURL)
+		out = append(out, part)
+	}
+	return out, true
+}
+
+func decodeStoredConversation[T any](conversation any, target *T) bool {
+	data, err := json.Marshal(conversation)
+	if err != nil {
+		return false
+	}
+	return json.Unmarshal(data, target) == nil
+}
+
+func openAIResponsesStoredMapLookup(value map[string]any, keys ...string) (any, bool) {
+	for _, key := range keys {
+		if raw, ok := value[key]; ok {
+			return raw, true
+		}
+	}
+	return nil, false
+}
+
+func openAIResponsesStoredString(value map[string]any, keys ...string) string {
+	raw, ok := openAIResponsesStoredMapLookup(value, keys...)
+	if !ok {
+		return ""
+	}
+	text, _ := raw.(string)
+	return text
+}
+
+func openAIResponsesStoredInt(value map[string]any, keys ...string) (int, bool) {
+	raw, ok := openAIResponsesStoredMapLookup(value, keys...)
+	if !ok {
+		return 0, false
+	}
+	switch number := raw.(type) {
+	case int:
+		return number, true
+	case int64:
+		return int(number), true
+	case float64:
+		return int(number), true
+	case json.Number:
+		n, err := number.Int64()
+		if err != nil {
+			return 0, false
+		}
+		return int(n), true
+	default:
+		return 0, false
+	}
 }
 
 func openAIImageDetail(options ExecutionOptions) string {

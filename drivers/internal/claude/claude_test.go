@@ -565,6 +565,43 @@ func TestClaudeExportedHelpersAndSSEBranches(t *testing.T) {
 	}
 }
 
+func TestClaudeConversationInputUsesJSONRestoredConversation(t *testing.T) {
+	t.Parallel()
+
+	stored := Prompt{
+		System: []Block{{Type: "text", Text: "stored system"}},
+		Messages: []Message{
+			{Role: "user", Content: []Block{{Type: "text", Text: "old question"}}},
+			{Role: "assistant", Content: []Block{{Type: "text", Text: "old answer"}}},
+		},
+	}
+	data, err := json.Marshal(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored any
+	if err := json.Unmarshal(data, &restored); err != nil {
+		t.Fatal(err)
+	}
+	prompt, err := FormatPrompt(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "new question"}}, ExecutionOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	withConversation := ConversationInput(restored, prompt)
+	if len(withConversation.System) != 1 || withConversation.System[0].Text != "stored system" {
+		t.Fatalf("system = %#v", withConversation.System)
+	}
+	if len(withConversation.Messages) != 3 {
+		t.Fatalf("messages = %#v", withConversation.Messages)
+	}
+	if withConversation.Messages[0].Content[0].Text != "old question" ||
+		withConversation.Messages[1].Content[0].Text != "old answer" ||
+		withConversation.Messages[2].Content[0].Text != "new question" {
+		t.Fatalf("messages = %#v", withConversation.Messages)
+	}
+}
+
 func writeSSE(t *testing.T, w http.ResponseWriter, data string) {
 	t.Helper()
 	_, err := w.Write([]byte("data: " + data + "\n\n"))
