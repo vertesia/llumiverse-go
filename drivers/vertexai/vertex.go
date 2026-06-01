@@ -613,9 +613,6 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 		config["responseMimeType"] = "application/json"
 		config["responseJsonSchema"] = options.ResultSchema
 	}
-	if len(options.Labels) > 0 {
-		config["labels"] = options.Labels
-	}
 	if thinking := geminiThinkingConfig(options); len(thinking) > 0 {
 		config["thinkingConfig"] = thinking
 	}
@@ -643,6 +640,9 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 	payload := map[string]any{
 		"contents":         contents,
 		"generationConfig": config,
+	}
+	if len(options.Labels) > 0 {
+		payload["labels"] = options.Labels
 	}
 	if prompt.System != nil {
 		payload["systemInstruction"] = prompt.System

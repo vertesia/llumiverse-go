@@ -223,6 +223,13 @@ func TestVertexGeminiConvertsToolConversationAndThinkingConfig(t *testing.T) {
 	if config["presencePenalty"] != 0.1 || config["seed"] != float64(7) {
 		t.Fatalf("generationConfig = %#v", config)
 	}
+	if _, ok := config["labels"]; ok {
+		t.Fatalf("generationConfig must not contain labels: %#v", config)
+	}
+	labels := got["labels"].(map[string]any)
+	if labels["job"] != "test" {
+		t.Fatalf("labels = %#v", labels)
+	}
 	contents := got["contents"].([]any)
 	firstPart := contents[0].(map[string]any)["parts"].([]any)[0].(map[string]any)
 	if firstPart["functionCall"] != nil || !strings.Contains(firstPart["text"].(string), "[Tool call: lookup") {
