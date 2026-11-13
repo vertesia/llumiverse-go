@@ -59,7 +59,7 @@ func ExampleExecutionOptions_tools() {
 		Model: "gpt-4.1-mini",
 		Tools: []llumiverse.ToolDefinition{{
 			Name:        "lookup_invoice",
-			Description: "Lookup an invoice by ID.",
+			Description: llumiverse.Ptr("Lookup an invoice by ID."),
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"id": map[string]any{"type": "string"}},

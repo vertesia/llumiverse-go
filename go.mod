@@ -8,12 +8,14 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrock v1.63.0
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.53.1
 	github.com/joho/godotenv v1.5.1
+	github.com/oapi-codegen/runtime v1.1.2
 	github.com/openai/openai-go v1.12.0
 	golang.org/x/oauth2 v0.36.0
 )
 
 require (
 	cloud.google.com/go/compute/metadata v0.3.0 // indirect
+	github.com/apapsch/go-jsonmerge/v2 v2.0.0 // indirect
 	github.com/aws/aws-sdk-go-v2/aws/protocol/eventstream v1.7.11 // indirect
 	github.com/aws/aws-sdk-go-v2/credentials v1.19.19 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.25 // indirect
@@ -27,6 +29,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.2 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.42.3 // indirect
 	github.com/aws/smithy-go v1.26.0 // indirect
+	github.com/google/uuid v1.6.0 // indirect
 	github.com/tidwall/gjson v1.14.4 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

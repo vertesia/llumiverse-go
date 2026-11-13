@@ -158,61 +158,6 @@ type ExecutionOptions struct {
 	StripHeartbeatsAfterTurns *int
 }
 
-// ToolDefinition describes a callable tool in the provider-neutral schema.
-type ToolDefinition struct {
-	// Name is the provider-visible function name.
-	Name string
-	// Description tells the model when and how to use the tool.
-	Description string
-	// InputSchema is a JSON Schema object describing the tool input.
-	InputSchema map[string]any
-}
-
-// ToolUse is a tool call returned by a model.
-type ToolUse struct {
-	// ID links the model's tool call to the later tool-result prompt segment.
-	ID string
-	// ToolName is the requested tool name.
-	ToolName string
-	// ToolInput is the parsed input object, or a partial JSON string for some stream chunks.
-	ToolInput any
-	// ThoughtSignature carries provider-specific signed reasoning metadata.
-	ThoughtSignature string
-}
-
-// ResultType identifies the shape of a completion result item.
-type ResultType string
-
-const (
-	ResultTypeText  ResultType = "text"
-	ResultTypeJSON  ResultType = "json"
-	ResultTypeImage ResultType = "image"
-)
-
-// CompletionResult is one text, JSON, or image output from a completion.
-type CompletionResult struct {
-	// Type identifies whether Value is text, parsed JSON, or an image URL/data URL.
-	Type ResultType
-	// Value contains the provider-normalized result payload.
-	Value any
-}
-
-// ExecutionTokenUsage stores provider token accounting normalized across APIs.
-type ExecutionTokenUsage struct {
-	// Prompt is the total normalized prompt-token count.
-	Prompt int
-	// Result is the output-token count.
-	Result int
-	// Total is the provider-reported total token count when available.
-	Total int
-	// PromptCached is the number of prompt tokens read from provider cache.
-	PromptCached int
-	// PromptCacheWrite is the number of prompt tokens written to provider cache.
-	PromptCacheWrite int
-	// PromptNew is the number of uncached prompt tokens.
-	PromptNew int
-}
-
 // ResultValidationError is set when JSON-schema result validation fails.
 type ResultValidationError struct {
 	// Code is a stable validation error code.
@@ -261,7 +206,21 @@ type CompletionChunk struct {
 	// FinishReason is set on terminal chunks when providers report it.
 	FinishReason string
 	// ToolUse contains incremental tool-call data.
-	ToolUse []ToolUse
+	ToolUse []ToolUseChunk
+}
+
+// ToolUseChunk is a tool-call fragment in a stream: the TypeScript client's ToolUse<unknown>.
+// ToolInput is a partial JSON string, an object, or nil; core accumulates the fragments and parses
+// them into the final ToolUse once the stream ends.
+type ToolUseChunk struct {
+	// ID identifies the tool call. Continuation fragments may leave it empty.
+	ID string
+	// ToolName is the tool to call, when this fragment carries it.
+	ToolName string
+	// ToolInput is a JSON string fragment, an object, or nil.
+	ToolInput any
+	// ThoughtSignature carries Gemini's signed reasoning state, when this fragment carries it.
+	ThoughtSignature string
 }
 
 // CompletionStream exposes provider streaming as a pull-based iterator.
@@ -273,63 +232,6 @@ type CompletionStream interface {
 	// Completion returns the accumulated response after stream consumption.
 	Completion() *ExecutionResponse
 }
-
-// AIModel is a normalized model listing entry.
-type AIModel struct {
-	// ID is the provider model ID or resource name.
-	ID string
-	// Name is a human-readable display name.
-	Name string
-	// Provider identifies the driver that returned this model.
-	Provider Provider
-	// Description is provider-supplied model text when available.
-	Description string
-	// Version is provider-supplied model version metadata when available.
-	Version string
-	// Type classifies the model, such as text, image, or embedding.
-	Type string
-	// Tags are normalized or provider-supplied model labels.
-	Tags []string
-	// Owner is the model publisher or account owner.
-	Owner string
-	// Status is provider-supplied lifecycle status when available.
-	Status string
-	// CanStream reports whether the model can stream completion output.
-	CanStream bool
-	// IsCustom reports whether the model is customer-created or fine-tuned.
-	IsCustom bool
-	// IsMultimodal reports whether the model accepts or produces multiple modalities.
-	IsMultimodal bool
-	// InputModalities lists supported input modalities when providers expose them.
-	InputModalities []string
-	// OutputModalities lists supported output modalities when providers expose them.
-	OutputModalities []string
-	// ToolSupport reports whether tool/function calling is supported.
-	ToolSupport bool
-}
-
-// ModelSearchPayload filters provider model listings.
-type ModelSearchPayload struct {
-	// Text filters model IDs and names by substring where supported.
-	Text string
-	// Type filters by normalized model type.
-	Type string
-	// Tags filters by model tags where supported.
-	Tags []string
-	// Owner filters by publisher or account owner where supported.
-	Owner string
-}
-
-// EmbeddingTaskType gives providers retrieval intent for text embeddings. Each
-// driver maps it to the provider's vocabulary, for example Gemini
-// RETRIEVAL_QUERY/RETRIEVAL_DOCUMENT, Cohere search_query/search_document, or
-// Nova GENERIC_RETRIEVAL/GENERIC_INDEX.
-type EmbeddingTaskType string
-
-const (
-	EmbeddingTaskQuery    EmbeddingTaskType = "query"
-	EmbeddingTaskDocument EmbeddingTaskType = "document"
-)
 
 // EmbeddingInput is one text, image, video, or audio item to embed. Media inputs
 // may produce one vector or multiple segmented vectors depending on the provider
@@ -370,50 +272,6 @@ type EmbeddingsOptions struct {
 	Dimensions int
 	// HTTPTimeout overrides transport timeouts for this embedding request when supported.
 	HTTPTimeout HTTPTimeoutOptions
-}
-
-// EmbeddingsResult preserves one result item per input.
-type EmbeddingsResult struct {
-	// Results has one item per input, preserving input order.
-	Results []EmbeddingResultItem
-	// Model is the embedding model that was invoked.
-	Model string
-	// Usage contains aggregate token accounting when providers report it.
-	Usage *EmbeddingsTokenUsage
-}
-
-// EmbeddingResultItem contains all vectors generated for a single input.
-type EmbeddingResultItem struct {
-	// Outputs contains one or more vectors generated for this input.
-	Outputs []EmbeddingOutput
-	// InputTokens is the provider-reported token count for this input.
-	InputTokens int
-}
-
-// EmbeddingOutput is a single vector, optionally tied to a media segment. Text
-// and image models usually return one output; segmented video/audio models may
-// return several outputs for a single input.
-type EmbeddingOutput struct {
-	// Values is the embedding vector.
-	Values []float64
-	// Modality is the normalized modality for this vector.
-	Modality string
-	// StartSec is the segment start time for segmented media embeddings.
-	StartSec *float64
-	// EndSec is the segment end time for segmented media embeddings.
-	EndSec *float64
-	// EmbeddingOption is the provider-specific Marengo view when reported.
-	EmbeddingOption string
-}
-
-// EmbeddingsTokenUsage stores aggregate embedding usage when providers report it.
-type EmbeddingsTokenUsage struct {
-	// InputTokens is the total input token count.
-	InputTokens int
-	// InputTextTokens is the text-token portion when providers report modality detail.
-	InputTextTokens int
-	// InputImageTokens is the image-token portion when providers report modality detail.
-	InputImageTokens int
 }
 
 // LlumiverseErrorContext identifies where a provider error occurred.

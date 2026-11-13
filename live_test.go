@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
-	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -84,7 +83,7 @@ func TestLiveListModelsAndBasicCompletion(t *testing.T) {
 				t.Fatalf("execute with schema: %v", err)
 			}
 			assertLiveCompletion(t, schemaResp)
-			if schemaResp.Result[0].Type != ResultTypeJSON {
+			if schemaResp.Result[0].Type() != ResultTypeJSON {
 				t.Fatalf("expected normalized JSON result, got %#v", schemaResp.Result)
 			}
 		})
@@ -480,7 +479,7 @@ func TestLiveBedrockImageGeneration(t *testing.T) {
 		}
 		t.Fatalf("bedrock image generation: %v", err)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type != ResultTypeImage || !strings.HasPrefix(fmt.Sprint(resp.Result[0].Value), "data:image/") {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeImage || !strings.HasPrefix(resp.Result[0].String(), "data:image/") {
 		t.Fatalf("image result = %#v", resp.Result)
 	}
 }
@@ -595,7 +594,7 @@ func liveToolOptions(model string) ExecutionOptions {
 		ModelOptions: liveModelOptions(model, 512),
 		Tools: []ToolDefinition{{
 			Name:        "get_weather",
-			Description: "Get the current weather in a given location",
+			Description: Ptr("Get the current weather in a given location"),
 			InputSchema: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -671,12 +670,9 @@ func assertLiveCompletion(t *testing.T, resp *ExecutionResponse) {
 func resultText(results []CompletionResult) string {
 	var b strings.Builder
 	for _, result := range results {
-		switch result.Type {
-		case ResultTypeText, ResultTypeImage:
-			_, _ = fmt.Fprint(&b, result.Value)
-		case ResultTypeJSON:
-			data, _ := json.Marshal(result.Value)
-			b.Write(data)
+		switch result.Type() {
+		case ResultTypeText, ResultTypeImage, ResultTypeJSON:
+			b.WriteString(result.String())
 		}
 	}
 	return b.String()

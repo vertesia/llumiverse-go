@@ -121,11 +121,11 @@ func openAIUsage(prompt, completion, total, cached int64) *ExecutionTokenUsage {
 		return nil
 	}
 	return &ExecutionTokenUsage{
-		Prompt:       int(prompt),
-		Result:       int(completion),
-		Total:        int(total),
-		PromptCached: int(cached),
-		PromptNew:    int(prompt - cached),
+		Prompt:       tokens(int(prompt)),
+		Result:       tokens(int(completion)),
+		Total:        tokens(int(total)),
+		PromptCached: tokens(int(cached)),
+		PromptNew:    tokens(int(prompt - cached)),
 	}
 }
 
@@ -143,15 +143,18 @@ func (d *OpenAICompatibleDriver) ListModels(ctx context.Context, _ *ModelSearchP
 		if owner == "system" && d.Provider() == ProviderOpenAI {
 			owner = "openai"
 		}
-		models = append(models, AIModel{
+		aiModel := AIModel{
 			ID:          model.ID,
 			Name:        model.ID,
-			Provider:    d.Provider(),
-			Owner:       owner,
-			Type:        "text",
-			CanStream:   true,
-			ToolSupport: !isLikelyNonToolOpenAIModel(model.ID),
-		})
+			Provider:    string(d.Provider()),
+			Type:        ptr(modelTypeText),
+			CanStream:   ptr(true),
+			ToolSupport: ptr(!isLikelyNonToolOpenAIModel(model.ID)),
+		}
+		if owner != "" {
+			aiModel.Owner = ptr(owner)
+		}
+		models = append(models, aiModel)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
@@ -195,9 +198,12 @@ func (d *OpenAICompatibleDriver) GenerateEmbeddings(ctx context.Context, options
 	sort.Slice(response.Data, func(i, j int) bool { return response.Data[i].Index < response.Data[j].Index })
 	items := make([]EmbeddingResultItem, 0, len(response.Data))
 	for _, item := range response.Data {
-		items = append(items, EmbeddingResultItem{Outputs: []EmbeddingOutput{{Values: item.Embedding, Modality: "text"}}})
+		items = append(items, EmbeddingResultItem{Outputs: []EmbeddingOutput{{Values: item.Embedding, Modality: ptr(embeddingOutputModalityText)}}})
 	}
-	usage := &EmbeddingsTokenUsage{InputTokens: int(response.Usage.PromptTokens), InputTextTokens: int(response.Usage.PromptTokens)}
+	usage := &EmbeddingsTokenUsage{
+		InputTokens:     tokens(int(response.Usage.PromptTokens)),
+		InputTextTokens: tokens(int(response.Usage.PromptTokens)),
+	}
 	if response.Usage.PromptTokens == 0 && response.Usage.TotalTokens == 0 {
 		usage = nil
 	}

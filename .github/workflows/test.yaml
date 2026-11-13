@@ -38,6 +38,16 @@ jobs:
             exit 1
           fi
 
+      - name: Check generated wire types
+        shell: bash
+        run: |
+          go generate ./wire
+          if [[ -n "$(git status --porcelain -- wire)" ]]; then
+            git status --short -- wire >&2
+            echo "wire/types.gen.go is stale: run 'go generate ./wire' and commit the result." >&2
+            exit 1
+          fi
+
       - name: Build
         run: go build ./...
       - name: Vet

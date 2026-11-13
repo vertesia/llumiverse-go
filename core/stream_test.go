@@ -11,19 +11,19 @@ func TestChannelStreamAccumulatesChunksToolsUsageAndFinalizer(t *testing.T) {
 
 	ch := make(chan StreamItem, 8)
 	ch <- StreamItem{Chunk: CompletionChunk{
-		Result:     []CompletionResult{{Type: ResultTypeText, Value: "hello "}},
-		TokenUsage: &ExecutionTokenUsage{Prompt: 10, Result: 1},
+		Result:     []CompletionResult{NewTextResult("hello ")},
+		TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(10), Result: Tokens(1)},
 	}}
 	ch <- StreamItem{Chunk: CompletionChunk{
-		Result:     []CompletionResult{{Type: ResultTypeText, Value: "world"}},
-		TokenUsage: &ExecutionTokenUsage{Prompt: 8, Result: 3, Total: 11, PromptCached: 2},
+		Result:     []CompletionResult{NewTextResult("world")},
+		TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(8), Result: Tokens(3), Total: Tokens(11), PromptCached: Tokens(2)},
 	}}
-	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{{Type: ResultTypeJSON, Value: map[string]any{"a": 1}}}}}
-	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{{Type: ResultTypeJSON, Value: map[string]any{"b": 2}}}}}
-	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUse{{ID: "tool_1", ToolName: "lookup", ToolInput: `{"q"`}}}}
-	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUse{{ToolInput: `:"tokyo"}`}}}}
-	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUse{{ID: "tool_2", ToolName: "merge", ToolInput: map[string]any{"x": 1}}}}}
-	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUse{{ID: "tool_2", ToolInput: map[string]any{"y": 2}}}, FinishReason: "tool_use"}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewJSONResult(map[string]any{"a": 1})}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewJSONResult(map[string]any{"b": 2})}}}
+	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUseChunk{{ID: "tool_1", ToolName: "lookup", ToolInput: `{"q"`}}}}
+	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUseChunk{{ToolInput: `:"tokyo"}`}}}}
+	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUseChunk{{ID: "tool_2", ToolName: "merge", ToolInput: map[string]any{"x": 1}}}}}
+	ch <- StreamItem{Chunk: CompletionChunk{ToolUse: []ToolUseChunk{{ID: "tool_2", ToolInput: map[string]any{"y": 2}}}, FinishReason: "tool_use"}}
 	close(ch)
 
 	var closeCalls, finalizerCalls int
@@ -50,24 +50,30 @@ func TestChannelStreamAccumulatesChunksToolsUsageAndFinalizer(t *testing.T) {
 	if completion.Chunks != 8 {
 		t.Fatalf("Chunks = %d", completion.Chunks)
 	}
-	if len(completion.Result) != 2 || completion.Result[0].Value != "hello world" {
+	if len(completion.Result) != 2 || completion.Result[0].Type() != ResultTypeText || completion.Result[0].String() != "hello world" {
 		t.Fatalf("Result = %#v", completion.Result)
 	}
-	jsonResult := completion.Result[1].Value.(map[string]any)
-	if jsonResult["a"] != 1 || jsonResult["b"] != 2 {
+	merged, err := completion.Result[1].AsJSONResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// JSON values come back decoded from JSON, so numbers are float64.
+	jsonResult := merged.Value.(map[string]any)
+	if jsonResult["a"] != 1.0 || jsonResult["b"] != 2.0 {
 		t.Fatalf("JSON result = %#v", jsonResult)
 	}
-	if completion.TokenUsage == nil || completion.TokenUsage.Prompt != 10 || completion.TokenUsage.Result != 3 || completion.TokenUsage.Total != 13 || completion.TokenUsage.PromptCached != 2 {
+	usage := completion.TokenUsage
+	if usage == nil || Count(usage.Prompt) != 10 || Count(usage.Result) != 3 || Count(usage.Total) != 13 || Count(usage.PromptCached) != 2 {
 		t.Fatalf("TokenUsage = %#v", completion.TokenUsage)
 	}
 	if len(completion.ToolUse) != 2 {
 		t.Fatalf("ToolUse = %#v", completion.ToolUse)
 	}
-	firstInput := completion.ToolUse[0].ToolInput.(map[string]any)
+	firstInput := *completion.ToolUse[0].ToolInput
 	if completion.ToolUse[0].ID != "tool_1" || firstInput["q"] != "tokyo" {
 		t.Fatalf("first tool = %#v", completion.ToolUse[0])
 	}
-	secondInput := completion.ToolUse[1].ToolInput.(map[string]any)
+	secondInput := *completion.ToolUse[1].ToolInput
 	if secondInput["x"] != 1 || secondInput["y"] != 2 {
 		t.Fatalf("second tool = %#v", completion.ToolUse[1])
 	}
@@ -93,7 +99,7 @@ func TestChannelStreamDropsTruncatedToolOnLength(t *testing.T) {
 
 	ch := make(chan StreamItem, 1)
 	ch <- StreamItem{Chunk: CompletionChunk{
-		ToolUse:      []ToolUse{{ID: "tool_1", ToolName: "lookup", ToolInput: `{"q"`}},
+		ToolUse:      []ToolUseChunk{{ID: "tool_1", ToolName: "lookup", ToolInput: `{"q"`}},
 		FinishReason: "length",
 	}}
 	close(ch)
@@ -117,7 +123,7 @@ func TestChannelStreamReturnsChunkErrorWithoutApplyingChunk(t *testing.T) {
 
 	ch := make(chan StreamItem, 1)
 	ch <- StreamItem{
-		Chunk: CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: "ignored"}}},
+		Chunk: CompletionChunk{Result: []CompletionResult{NewTextResult("ignored")}},
 		Err:   errors.New("stream failed"),
 	}
 	close(ch)
@@ -139,10 +145,10 @@ func TestChannelStreamHandlesNilCompletion(t *testing.T) {
 
 	ch := make(chan StreamItem, 1)
 	ch <- StreamItem{Chunk: CompletionChunk{
-		Result:       []CompletionResult{{Type: ResultTypeText, Value: "ignored"}},
-		TokenUsage:   &ExecutionTokenUsage{Prompt: 1},
+		Result:       []CompletionResult{NewTextResult("ignored")},
+		TokenUsage:   &ExecutionTokenUsage{Prompt: Tokens(1)},
 		FinishReason: "stop",
-		ToolUse:      []ToolUse{{ID: "tool_1", ToolInput: "{}"}},
+		ToolUse:      []ToolUseChunk{{ID: "tool_1", ToolInput: "{}"}},
 	}}
 	close(ch)
 	stream := NewChannelStream(ch, nil, nil)

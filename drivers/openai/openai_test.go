@@ -60,7 +60,7 @@ func TestOpenAICompatibleExecuteUsesResponsesAPI(t *testing.T) {
 		ModelOptions: map[string]any{"temperature": 0.2, "max_tokens": 64},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
-			Description: "Lookup data",
+			Description: ptr("Lookup data"),
 			InputSchema: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"q": map[string]any{"type": "string"}},
@@ -84,10 +84,10 @@ func TestOpenAICompatibleExecuteUsesResponsesAPI(t *testing.T) {
 	if resp.FinishReason != "stop" {
 		t.Fatalf("finish reason = %q", resp.FinishReason)
 	}
-	if resp.TokenUsage == nil || resp.TokenUsage.Total != 7 {
+	if resp.TokenUsage == nil || count(resp.TokenUsage.Total) != 7 {
 		t.Fatalf("usage = %#v", resp.TokenUsage)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type != ResultTypeJSON {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeJSON {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 }
@@ -177,10 +177,10 @@ func TestOpenAIDriverUsesResponsesAPI(t *testing.T) {
 	if !ok || metadata["job"] != "test" {
 		t.Fatalf("metadata = %#v", got["metadata"])
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type != ResultTypeJSON {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeJSON {
 		t.Fatalf("result = %#v", resp.Result)
 	}
-	if resp.TokenUsage == nil || resp.TokenUsage.PromptCached != 1 || resp.TokenUsage.Total != 5 {
+	if resp.TokenUsage == nil || count(resp.TokenUsage.PromptCached) != 1 || count(resp.TokenUsage.Total) != 5 {
 		t.Fatalf("usage = %#v", resp.TokenUsage)
 	}
 	if resp.Conversation == nil {
@@ -353,7 +353,7 @@ func TestOpenAIImageGeneration(t *testing.T) {
 	if got["background"] != "transparent" || got["output_format"] != "webp" || got["output_compression"] != float64(80) || got["moderation"] != "low" {
 		t.Fatalf("image options = %#v", got)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type != ResultTypeImage || resp.Result[0].Value != "data:image/png;base64,aW1hZ2U=" {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeImage || resp.Result[0].String() != "data:image/png;base64,aW1hZ2U=" {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 }
