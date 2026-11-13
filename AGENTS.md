@@ -39,12 +39,43 @@ drivers/anthropic       thin shell over the shared Claude implementation
 drivers/bedrock         AWS Bedrock driver (Converse / ConverseStream / InvokeModel)
 drivers/vertexai        Gemini Enterprise Agent Platform driver (Gemini/Imagen/Claude)
 drivers/internal/claude shared Claude prompt/stream/conversation logic
+wire/                   JSON shapes generated from schema/ (package wire) + helpers
+schema/                 llumiverse JSON Schema document, copied from the TS llumiverse
+gen/                    separate module: the wiregen command and the pinned oapi-codegen
+scripts/                sync-schema.sh
 examples/               runnable per-provider examples
 ```
 
 Most packages carry a `doc.go` package comment, an `aliases.go` that re-exports
 `common`/`core` names, and (where they own retention) a `conversation.go`. The
 `anthropic` package is a thin shell that delegates to `drivers/internal/claude`.
+
+## Generated wire types
+
+The TypeScript llumiverse emits `common/json-schema/llumiverse.schema.json` from its
+Zod schemas. This repository keeps a copy in `schema/` (its origin commit is in
+`schema/SOURCE`) and generates `wire/types.gen.go` from it, so both clients
+serialize the same JSON.
+
+- **Never edit `wire/types.gen.go`.** To pick up a llumiverse schema change, run
+  `scripts/sync-schema.sh <llumiverse checkout path | git ref>`, which copies the
+  document and runs `go generate ./wire`. CI fails when the generated file is stale.
+- `gen/` is its own module so the generator's dependencies stay out of the
+  library's `go.mod`. `gen/cmd/wiregen` rewrites the few JSON Schema 2020-12
+  keywords oapi-codegen does not read (`const`, numeric `exclusiveMinimum`,
+  nullable `anyOf`) and makes `number` a `float64`; the oapi-codegen version is the
+  `tool` pinned in `gen/go.mod`.
+- `goTypes` in `gen/cmd/wiregen` replaces a generated struct with a Go type. `JSONSchema`
+  is `map[string]any`: it is open on purpose, and a struct would drop the keywords it
+  does not declare (`enum`, `oneOf`, `minimum`, ...) on the next encode.
+- Hand-written helpers live next to the generated file (`wire/helpers.go`):
+  result constructors (`NewTextResult`, ...), `CompletionResult.Type`/`String`,
+  and `ModelOptions.OptionID`/`Map`. `wire/roundtrip_test.go` checks that JSON from
+  the TS client decodes and re-encodes unchanged.
+- Follow the TS split: a type the TS client derives from a Zod schema
+  (`z.infer`) is the generated `wire` type in Go too, aliased from `common`. Types
+  the TS client writes by hand because they carry behavior (`Driver`, `DataSource`,
+  streams, `ExecutionOptions`) stay hand-written in `common`.
 
 ## Conventions
 

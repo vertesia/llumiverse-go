@@ -22,7 +22,9 @@ type DriverOptions = common.DriverOptions
 type ExecutionOptions = common.ExecutionOptions
 type ToolDefinition = common.ToolDefinition
 type ToolUse = common.ToolUse
-type ResultType = common.ResultType
+type ToolUseChunk = common.ToolUseChunk
+type JSONObject = common.JSONObject
+type ModelType = common.ModelType
 type CompletionResult = common.CompletionResult
 type ExecutionTokenUsage = common.ExecutionTokenUsage
 type ResultValidationError = common.ResultValidationError
@@ -69,9 +71,12 @@ const (
 	PromptRoleMask      = common.PromptRoleMask
 	PromptRoleTool      = common.PromptRoleTool
 
-	ResultTypeText  = common.ResultTypeText
-	ResultTypeJSON  = common.ResultTypeJSON
-	ResultTypeImage = common.ResultTypeImage
+	ResultTypeText     = common.ResultTypeText
+	ResultTypeThoughts = common.ResultTypeThoughts
+	ResultTypeJSON     = common.ResultTypeJSON
+	ResultTypeImage    = common.ResultTypeImage
+	ResultTypeVideo    = common.ResultTypeVideo
+	ResultTypeAudio    = common.ResultTypeAudio
 
 	EmbeddingTaskQuery    = common.EmbeddingTaskQuery
 	EmbeddingTaskDocument = common.EmbeddingTaskDocument
@@ -81,6 +86,21 @@ const (
 	EmbeddingInputVideo = core.EmbeddingInputVideo
 	EmbeddingInputAudio = core.EmbeddingInputAudio
 )
+
+// Result constructors, re-exported from package common.
+var (
+	NewTextResult     = common.NewTextResult
+	NewThoughtsResult = common.NewThoughtsResult
+	NewJSONResult     = common.NewJSONResult
+	NewImageResult    = common.NewImageResult
+	NewVideoResult    = common.NewVideoResult
+	NewAudioResult    = common.NewAudioResult
+)
+
+// Ptr returns a pointer to v, for the optional fields of the generated types.
+func Ptr[T any](v T) *T {
+	return &v
+}
 
 // NewOpenAIDriver creates the first-party OpenAI driver using openai-go.
 func NewOpenAIDriver(options OpenAICompatibleOptions) (*OpenAICompatibleDriver, error) {

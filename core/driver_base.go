@@ -151,16 +151,12 @@ func retryableFromStatusAndMessage(code int, msg string) *bool {
 // provider returned the structured output as plain text.
 func normalizeJSONResult(completion *Completion) {
 	for i := range completion.Result {
-		if completion.Result[i].Type != ResultTypeText {
-			continue
-		}
-		text, ok := completion.Result[i].Value.(string)
-		if !ok {
+		if completion.Result[i].Type() != ResultTypeText {
 			continue
 		}
 		var parsed any
-		if parseJSONResultText(text, &parsed) {
-			completion.Result[i] = CompletionResult{Type: ResultTypeJSON, Value: parsed}
+		if parseJSONResultText(completion.Result[i].String(), &parsed) {
+			completion.Result[i] = NewJSONResult(parsed)
 			return
 		}
 	}
@@ -272,16 +268,18 @@ func safeJSONParse(value string) any {
 func completionResultsToText(results []CompletionResult) string {
 	var b strings.Builder
 	for _, result := range results {
-		switch result.Type {
+		switch result.Type() {
 		case ResultTypeText:
-			b.WriteString(toString(result.Value))
+			b.WriteString(result.String())
 		case ResultTypeJSON:
-			if s, ok := result.Value.(string); ok {
-				b.WriteString(s)
-			} else {
-				data, _ := json.Marshal(result.Value)
-				b.Write(data)
+			// A JSON result holding a string is written as that string, not as a quoted JSON literal.
+			if value, err := result.AsJSONResult(); err == nil {
+				if s, ok := value.Value.(string); ok {
+					b.WriteString(s)
+					continue
+				}
 			}
+			b.WriteString(result.String())
 		}
 	}
 	return b.String()

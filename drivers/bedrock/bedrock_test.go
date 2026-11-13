@@ -134,7 +134,7 @@ func TestBedrockExecuteUsesConverse(t *testing.T) {
 		ModelOptions: map[string]any{"max_tokens": 128, "temperature": 0.3},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
-			Description: "Lookup",
+			Description: ptr("Lookup"),
 			InputSchema: map[string]any{"type": "object"},
 		}},
 	})
@@ -153,7 +153,7 @@ func TestBedrockExecuteUsesConverse(t *testing.T) {
 	if len(runtime.got.ToolConfig.Tools) != 1 {
 		t.Fatalf("tools = %#v", runtime.got.ToolConfig)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Value != "bedrock ok" {
+	if len(resp.Result) != 1 || resp.Result[0].String() != "bedrock ok" {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 	if len(resp.ToolUse) != 1 || resp.ToolUse[0].ToolName != "lookup" {
@@ -206,7 +206,7 @@ func TestBedrockClaudeDocumentsAndCachePoints(t *testing.T) {
 		},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
-			Description: "Lookup",
+			Description: ptr("Lookup"),
 			InputSchema: map[string]any{"type": "object"},
 		}},
 	})
@@ -371,10 +371,10 @@ func TestBedrockListModelsIncludesCustomAndInferenceProfiles(t *testing.T) {
 	for _, model := range models {
 		byID[model.ID] = model
 	}
-	if !byID["arn:custom:model"].IsCustom || byID["arn:custom:model"].Owner != "custom" {
+	if !aws.ToBool(byID["arn:custom:model"].IsCustom) || aws.ToString(byID["arn:custom:model"].Owner) != "custom" {
 		t.Fatalf("custom model = %#v", byID["arn:custom:model"])
 	}
-	if byID["arn:profile:anthropic"].Owner != "anthropic" {
+	if aws.ToString(byID["arn:profile:anthropic"].Owner) != "anthropic" {
 		t.Fatalf("profile model = %#v", byID["arn:profile:anthropic"])
 	}
 }
@@ -390,17 +390,17 @@ func TestBedrockCompletionStreamingAndConversationHelperBranches(t *testing.T) {
 		Usage: &brtypes.TokenUsage{CacheReadInputTokens: aws.Int32(1), CacheWriteInputTokens: aws.Int32(2)},
 	}
 	completion := extractBedrockCompletion(output, ExecutionOptions{IncludeOriginalResponse: true, ModelOptions: map[string]any{"include_thoughts": true}})
-	if completion.OriginalResponse == nil || len(completion.Result) != 1 || completion.Result[0].Value != "think\n\n" {
+	if completion.OriginalResponse == nil || len(completion.Result) != 1 || completion.Result[0].String() != "think\n\n" {
 		t.Fatalf("completion = %#v", completion)
 	}
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ToolInput != nil || completion.FinishReason != "tool_use" {
 		t.Fatalf("tool completion = %#v", completion)
 	}
-	if completion.TokenUsage == nil || completion.TokenUsage.Prompt != 3 || completion.TokenUsage.PromptCached != 1 || completion.TokenUsage.PromptCacheWrite != 2 {
+	if completion.TokenUsage == nil || count(completion.TokenUsage.Prompt) != 3 || count(completion.TokenUsage.PromptCached) != 1 || count(completion.TokenUsage.PromptCacheWrite) != 2 {
 		t.Fatalf("usage = %#v", completion.TokenUsage)
 	}
 	empty := extractBedrockCompletion(&bedrockruntime.ConverseOutput{}, ExecutionOptions{})
-	if len(empty.Result) != 1 || empty.Result[0].Value != "" {
+	if len(empty.Result) != 1 || empty.Result[0].Type() != ResultTypeText || empty.Result[0].String() != "" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 	if documentToAny(nil) != nil || bedrockUsage(nil) != nil {
@@ -414,7 +414,7 @@ func TestBedrockCompletionStreamingAndConversationHelperBranches(t *testing.T) {
 	reasoning := state.contentBlockDelta(brtypes.ContentBlockDeltaEvent{
 		Delta: &brtypes.ContentBlockDeltaMemberReasoningContent{Value: &brtypes.ReasoningContentBlockDeltaMemberText{Value: "stream think"}},
 	}, ExecutionOptions{ModelOptions: map[string]any{"include_thoughts": true}})
-	if len(reasoning.Result) != 1 || reasoning.Result[0].Value != "stream think" {
+	if len(reasoning.Result) != 1 || reasoning.Result[0].String() != "stream think" {
 		t.Fatalf("reasoning delta = %#v", reasoning)
 	}
 	hidden := state.contentBlockDelta(brtypes.ContentBlockDeltaEvent{
@@ -469,7 +469,7 @@ func TestBedrockToolResultFiles(t *testing.T) {
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
-			Description: "Lookup",
+			Description: ptr("Lookup"),
 			InputSchema: map[string]any{"type": "object"},
 		}},
 	})
@@ -719,7 +719,7 @@ func TestBedrockTitanImageEmbeddings(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Results) != 1 || result.Results[0].Outputs[0].Modality != embeddingInputImage {
+	if len(result.Results) != 1 || modalityString(result.Results[0].Outputs[0].Modality) != embeddingInputImage {
 		t.Fatalf("result = %#v", result)
 	}
 	body := bedrockInvokeBody(t, runtime.gotInvoke)
@@ -730,7 +730,7 @@ func TestBedrockTitanImageEmbeddings(t *testing.T) {
 	if config["outputEmbeddingLength"] != float64(384) {
 		t.Fatalf("embeddingConfig = %#v", config)
 	}
-	if result.Usage == nil || result.Usage.InputTokens != 7 {
+	if result.Usage == nil || count(result.Usage.InputTokens) != 7 {
 		t.Fatalf("usage = %#v", result.Usage)
 	}
 }
@@ -775,7 +775,7 @@ func TestBedrockCohereEmbeddingsTextAndImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Results[0].Outputs[0].Modality != embeddingInputImage {
+	if modalityString(result.Results[0].Outputs[0].Modality) != embeddingInputImage {
 		t.Fatalf("result = %#v", result)
 	}
 	body = bedrockInvokeBody(t, runtime.gotInvoke)
@@ -874,7 +874,7 @@ func TestBedrockStreamUsesConverseStream(t *testing.T) {
 		ModelOptions: map[string]any{"max_tokens": 128},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
-			Description: "Lookup",
+			Description: ptr("Lookup"),
 			InputSchema: map[string]any{"type": "object"},
 		}},
 	})
@@ -904,20 +904,20 @@ func TestBedrockStreamUsesConverseStream(t *testing.T) {
 	if completion == nil {
 		t.Fatal("completion is nil")
 	}
-	if len(completion.Result) != 1 || completion.Result[0].Value != "hello world" {
+	if len(completion.Result) != 1 || completion.Result[0].String() != "hello world" {
 		t.Fatalf("completion result = %#v", completion.Result)
 	}
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ToolName != "lookup" {
 		t.Fatalf("completion tool use = %#v", completion.ToolUse)
 	}
-	input, ok := completion.ToolUse[0].ToolInput.(map[string]any)
-	if !ok || input["q"] != "tokyo" {
+	input := completion.ToolUse[0].ToolInput
+	if input == nil || (*input)["q"] != "tokyo" {
 		t.Fatalf("completion tool input = %#v", completion.ToolUse[0].ToolInput)
 	}
 	if completion.FinishReason != "tool_use" {
 		t.Fatalf("finish reason = %q", completion.FinishReason)
 	}
-	if completion.TokenUsage == nil || completion.TokenUsage.Total != 5 {
+	if completion.TokenUsage == nil || count(completion.TokenUsage.Total) != 5 {
 		t.Fatalf("token usage = %#v", completion.TokenUsage)
 	}
 }
@@ -1049,7 +1049,7 @@ func TestBedrockImageGenerationUsesInvokeModel(t *testing.T) {
 	if config["width"] != float64(512) || config["cfgScale"] != 7.5 {
 		t.Fatalf("imageGenerationConfig = %#v", config)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type != ResultTypeImage || resp.Result[0].Value != "data:image/png;base64,aW1n" {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeImage || resp.Result[0].String() != "data:image/png;base64,aW1n" {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 }
@@ -1437,4 +1437,12 @@ func (e fakeBedrockAPIError) ErrorMessage() string {
 
 func (e fakeBedrockAPIError) ErrorFault() string {
 	return e.fault
+}
+
+// modalityString returns the embedding output modality, or "" when it is unset.
+func modalityString(modality *EmbeddingOutputModality) string {
+	if modality == nil {
+		return ""
+	}
+	return string(*modality)
 }

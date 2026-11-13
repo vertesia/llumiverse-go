@@ -59,7 +59,7 @@ func TestVertexGeminiExecuteUsesGenerateContentEndpoint(t *testing.T) {
 	if got["systemInstruction"] == nil {
 		t.Fatalf("missing system instruction: %#v", got)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Value != "gemini ok" {
+	if len(resp.Result) != 1 || resp.Result[0].String() != "gemini ok" {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 }
@@ -504,7 +504,7 @@ func TestVertexThinkingAndEmbeddingHelperBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(outputs) != 1 || outputs[0].Modality != embeddingInputImage {
+	if len(outputs) != 1 || outputs[0].Modality == nil || *outputs[0].Modality != embeddingInputImage {
 		t.Fatalf("fallback outputs = %#v", outputs)
 	}
 	start := 1.0
@@ -513,7 +513,7 @@ func TestVertexThinkingAndEmbeddingHelperBranches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if outputs[0].Modality != embeddingInputVideo || outputs[0].StartSec == nil || *outputs[0].StartSec != 1 {
+	if outputs[0].Modality == nil || *outputs[0].Modality != embeddingInputVideo || outputs[0].StartSec == nil || *outputs[0].StartSec != 1 {
 		t.Fatalf("video fallback outputs = %#v", outputs)
 	}
 	if _, err := vertexLegacyMultimodalOutputs(vertexLegacyMultimodalPrediction{}, embeddingInputText); err == nil {
@@ -563,7 +563,7 @@ func TestVertexEmbedContentDefaultModelUsesGlobalAndMultimodalContent(t *testing
 	if result.Model != defaultVertexEmbeddingModel || len(result.Results) != 2 {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Usage == nil || result.Usage.InputTokens != 8 || result.Usage.InputTextTokens != 3 || result.Usage.InputImageTokens != 5 {
+	if result.Usage == nil || result.Usage.InputTokens == nil || *result.Usage.InputTokens != 8 || result.Usage.InputTextTokens == nil || *result.Usage.InputTextTokens != 3 || result.Usage.InputImageTokens == nil || *result.Usage.InputImageTokens != 5 {
 		t.Fatalf("usage = %#v", result.Usage)
 	}
 	if len(calls) != 2 {
@@ -624,7 +624,7 @@ func TestVertexTextEmbeddingPredictTaskTypeAndDimensions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Results) != 1 || result.Results[0].InputTokens != 4 {
+	if len(result.Results) != 1 || result.Results[0].InputTokens == nil || *result.Results[0].InputTokens != 4 {
 		t.Fatalf("result = %#v", result)
 	}
 	parameters := got["parameters"].(map[string]any)
@@ -824,7 +824,7 @@ func TestVertexImagenUsesPredictEndpoint(t *testing.T) {
 	if params["sampleCount"] != float64(2) || params["aspectRatio"] != "1:1" || params["negativePrompt"] != "blur" {
 		t.Fatalf("parameters = %#v", params)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Value != "data:image/png;base64,aW1n" {
+	if len(resp.Result) != 1 || resp.Result[0].String() != "data:image/png;base64,aW1n" {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 }
@@ -885,13 +885,18 @@ func TestVertexHelperBranches(t *testing.T) {
 	if got := formatGeminiFunctionResponse("plain"); got["output"] != "plain" {
 		t.Fatalf("plain function response = %#v", got)
 	}
-	tools := geminiTools([]ToolDefinition{{Name: "lookup", Description: "Lookup", InputSchema: map[string]any{"type": "object"}}})
+	tools := geminiTools([]ToolDefinition{{Name: "lookup", Description: ptr("Lookup"), InputSchema: map[string]any{"type": "object"}}})
 	if len(tools) != 1 || tools[0]["name"] != "lookup" || tools[0]["parametersJsonSchema"] == nil {
 		t.Fatalf("tools = %#v", tools)
 	}
 	streamed := buildGeminiStreamingConversation(geminiPrompt{}, &Completion{
-		Result:  []CompletionResult{{Type: ResultTypeText, Value: "hello"}},
-		ToolUse: []ToolUse{{ID: "lookup", ToolName: "lookup", ToolInput: map[string]any{"q": "tokyo"}, ThoughtSignature: "sig"}},
+		Result: []CompletionResult{newTextResult("hello")},
+		ToolUse: []ToolUse{{
+			ID:               "lookup",
+			ToolName:         "lookup",
+			ToolInput:        &JSONObject{"q": "tokyo"},
+			ThoughtSignature: ptr("sig"),
+		}},
 	})
 	if len(streamed.Contents) != 1 || len(streamed.Contents[0].Parts) != 2 || streamed.Contents[0].Parts[1].ThoughtSignature != "sig" {
 		t.Fatalf("streamed conversation = %#v", streamed)
@@ -1031,7 +1036,7 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 		BlockReason        string `json:"blockReason"`
 		BlockReasonMessage string `json:"blockReasonMessage"`
 	}{BlockReason: "SAFETY", BlockReasonMessage: "blocked"}})
-	if blocked.FinishReason != "SAFETY" || blocked.Result[0].Value != "blocked" {
+	if blocked.FinishReason != "SAFETY" || blocked.Result[0].String() != "blocked" {
 		t.Fatalf("blocked chunk = %#v", blocked)
 	}
 	response := geminiResponse{}
@@ -1052,10 +1057,10 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 	if completion.OriginalResponse == nil || completion.FinishReason != "tool_use" || len(completion.Result) != 2 || len(completion.ToolUse) != 1 {
 		t.Fatalf("completion = %#v", completion)
 	}
-	if completion.TokenUsage == nil || completion.TokenUsage.Result != 8 || completion.TokenUsage.PromptNew != 3 {
+	if completion.TokenUsage == nil || completion.TokenUsage.Result == nil || *completion.TokenUsage.Result != 8 || completion.TokenUsage.PromptNew == nil || *completion.TokenUsage.PromptNew != 3 {
 		t.Fatalf("usage = %#v", completion.TokenUsage)
 	}
-	if empty := geminiResponseToCompletion(geminiResponse{}, false); len(empty.Result) != 1 || empty.Result[0].Value != "" {
+	if empty := geminiResponseToCompletion(geminiResponse{}, false); len(empty.Result) != 1 || empty.Result[0].String() != "" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 }
@@ -1119,11 +1124,11 @@ func TestVertexListModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := driver.ListModels(context.Background(), &ModelSearchPayload{Text: "gemini"})
+	models, err := driver.ListModels(context.Background(), &ModelSearchPayload{Text: ptr("gemini")})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 1 || models[0].ID != "publishers/google/models/gemini-b" || models[0].Owner != "google" {
+	if len(models) != 1 || models[0].ID != "publishers/google/models/gemini-b" || models[0].Owner == nil || *models[0].Owner != "google" {
 		t.Fatalf("filtered models = %#v", models)
 	}
 	models, err = driver.ListModels(context.Background(), nil)
@@ -1178,10 +1183,10 @@ func TestVertexGeminiStreamParsesSSE(t *testing.T) {
 		t.Fatalf("payload = %#v", got)
 	}
 	completion := stream.Completion()
-	if len(completion.Result) != 1 || completion.Result[0].Value != "hello world" {
+	if len(completion.Result) != 1 || completion.Result[0].String() != "hello world" {
 		t.Fatalf("result = %#v", completion.Result)
 	}
-	if completion.TokenUsage == nil || completion.TokenUsage.Total != 5 {
+	if completion.TokenUsage == nil || completion.TokenUsage.Total == nil || *completion.TokenUsage.Total != 5 {
 		t.Fatalf("usage = %#v", completion.TokenUsage)
 	}
 	if conversation, ok := completion.Conversation.(geminiPrompt); !ok || len(conversation.Contents) != 2 {

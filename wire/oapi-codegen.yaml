@@ -1,0 +1,13 @@
+# Configuration for `go generate ./wire`; see gen/cmd/wiregen.
+package: wire
+generate:
+  models: true
+output: ../wire/types.gen.go
+output-options:
+  # The document has no paths, so every component would otherwise count as unused and be pruned.
+  skip-prune: true
+  # Go initialisms: ToolUseID, ProviderCostUSD.
+  name-normalizer: ToCamelCaseWithInitialisms
+compatibility:
+  # TextResultTypeText rather than a bare Text when a value name would not collide.
+  always-prefix-enum-values: true

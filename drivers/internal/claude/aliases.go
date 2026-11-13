@@ -17,9 +17,11 @@ type ExecutionResponse = common.ExecutionResponse
 type CompletionStream = common.CompletionStream
 type CompletionChunk = common.CompletionChunk
 type CompletionResult = common.CompletionResult
-type ResultType = common.ResultType
 type ToolDefinition = common.ToolDefinition
 type ToolUse = common.ToolUse
+type ToolUseChunk = common.ToolUseChunk
+type JSONObject = common.JSONObject
+type ModelType = common.ModelType
 type ExecutionTokenUsage = common.ExecutionTokenUsage
 type EmbeddingsOptions = common.EmbeddingsOptions
 type EmbeddingsResult = common.EmbeddingsResult
@@ -70,4 +72,20 @@ var (
 	errorStatusAndName             = core.ErrorStatusAndName
 	boolPtr                        = common.BoolPtr
 	newLlumiverseError             = common.NewLlumiverseError
+	newTextResult                  = common.NewTextResult
+	tokens                         = common.Tokens
+	toolInputObject                = common.ToolInputObject
 )
+
+// ptr returns a pointer to v, for the optional fields of the generated types.
+func ptr[T any](v T) *T {
+	return &v
+}
+
+// stringValue returns the value of an optional string, or "" when it is unset.
+func stringValue(v *string) string {
+	if v == nil {
+		return ""
+	}
+	return *v
+}

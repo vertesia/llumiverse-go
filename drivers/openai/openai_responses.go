@@ -211,8 +211,8 @@ func openAIResponseTools(tools []ToolDefinition) []responses.ToolUnionParam {
 			Parameters: schema,
 			Strict:     param.NewOpt(strict),
 		}
-		if tool.Description != "" {
-			fn.Description = param.NewOpt(tool.Description)
+		if tool.Description != nil && *tool.Description != "" {
+			fn.Description = param.NewOpt(*tool.Description)
 		}
 		out = append(out, responses.ToolUnionParam{OfFunction: &fn})
 	}
@@ -224,7 +224,7 @@ func openAIResponseTools(tools []ToolDefinition) []responses.ToolUnionParam {
 // reason, and optionally attaching the raw response.
 func extractOpenAIResponseCompletion(response *responses.Response, includeOriginal bool) *Completion {
 	if response == nil {
-		return &Completion{Result: []CompletionResult{{Type: ResultTypeText, Value: ""}}}
+		return &Completion{Result: []CompletionResult{newTextResult("")}}
 	}
 	result := openAIResponseResults(response.Output)
 	tools := openAIResponseToolUses(response.Output)
@@ -235,7 +235,7 @@ func extractOpenAIResponseCompletion(response *responses.Response, includeOrigin
 		FinishReason: openAIResponseFinishReason(*response, len(tools) > 0),
 	}
 	if len(completion.Result) == 0 && len(completion.ToolUse) == 0 {
-		completion.Result = []CompletionResult{{Type: ResultTypeText, Value: ""}}
+		completion.Result = []CompletionResult{newTextResult("")}
 	}
 	if includeOriginal {
 		completion.OriginalResponse = response
@@ -252,7 +252,7 @@ func openAIResponseResults(output []responses.ResponseOutputItemUnion) []Complet
 		case "message":
 			for _, part := range item.Content {
 				if part.Type == "output_text" && part.Text != "" {
-					results = append(results, CompletionResult{Type: ResultTypeText, Value: part.Text})
+					results = append(results, newTextResult(part.Text))
 				}
 			}
 		case "image_generation_call":
@@ -261,7 +261,7 @@ func openAIResponseResults(output []responses.ResponseOutputItemUnion) []Complet
 				if !strings.HasPrefix(value, "data:") {
 					value = "data:image/png;base64," + value
 				}
-				results = append(results, CompletionResult{Type: ResultTypeImage, Value: value})
+				results = append(results, newImageResult(value))
 			}
 		}
 	}
@@ -283,7 +283,7 @@ func openAIResponseToolUses(output []responses.ResponseOutputItemUnion) []ToolUs
 		if id == "" {
 			continue
 		}
-		tools = append(tools, ToolUse{ID: id, ToolName: item.Name, ToolInput: safeJSONParse(item.Arguments)})
+		tools = append(tools, ToolUse{ID: id, ToolName: item.Name, ToolInput: toolInputObject(safeJSONParse(item.Arguments))})
 	}
 	return tools
 }
@@ -356,7 +356,7 @@ func (s *openAIResponsesStreamState) chunk(event responses.ResponseStreamEventUn
 			if value.Item.CallID != "" {
 				s.tools[value.Item.CallID] = meta
 			}
-			return CompletionChunk{ToolUse: []ToolUse{{ID: id, ToolName: value.Item.Name, ToolInput: ""}}}
+			return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: value.Item.Name, ToolInput: ""}}}
 		}
 	case responses.ResponseFunctionCallArgumentsDeltaEvent:
 		meta := s.tools[value.ItemID]
@@ -367,10 +367,10 @@ func (s *openAIResponsesStreamState) chunk(event responses.ResponseStreamEventUn
 		if id == "" {
 			id = fmt.Sprintf("tool_%d", value.OutputIndex)
 		}
-		return CompletionChunk{ToolUse: []ToolUse{{ID: id, ToolName: meta.name, ToolInput: value.Delta}}}
+		return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: meta.name, ToolInput: value.Delta}}}
 	case responses.ResponseTextDeltaEvent:
 		if value.Delta != "" {
-			return CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: value.Delta}}}
+			return CompletionChunk{Result: []CompletionResult{newTextResult(value.Delta)}}
 		}
 	case responses.ResponseCompletedEvent:
 		tools := openAIResponseToolUses(value.Response.Output)
@@ -443,13 +443,8 @@ func buildOpenAIResponsesConversation(input responses.ResponseInputParam, comple
 		out = append(out, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleAssistant))
 	}
 	for _, tool := range completion.ToolUse {
-		args := ""
-		if s, ok := tool.ToolInput.(string); ok {
-			args = s
-		} else {
-			data, _ := json.Marshal(tool.ToolInput)
-			args = string(data)
-		}
+		data, _ := json.Marshal(tool.ToolInput)
+		args := string(data)
 		out = append(out, responses.ResponseInputItemParamOfFunctionCall(args, tool.ID, tool.ToolName))
 	}
 	turn := openAIResponsesTurn(options.Conversation) + 1
@@ -636,14 +631,18 @@ func openAIImageDetail(options ExecutionOptions) string {
 func completionResultsToText(results []CompletionResult) string {
 	var b strings.Builder
 	for _, result := range results {
-		switch result.Type {
+		switch result.Type() {
 		case ResultTypeText:
-			b.WriteString(toString(result.Value))
+			b.WriteString(result.String())
 		case ResultTypeJSON:
-			if s, ok := result.Value.(string); ok {
+			jsonResult, err := result.AsJSONResult()
+			if err != nil {
+				continue
+			}
+			if s, ok := jsonResult.Value.(string); ok {
 				b.WriteString(s)
 			} else {
-				data, _ := json.Marshal(result.Value)
+				data, _ := json.Marshal(jsonResult.Value)
 				b.Write(data)
 			}
 		}
@@ -866,9 +865,9 @@ func (d *OpenAICompatibleDriver) requestOpenAIImageGeneration(ctx context.Contex
 	results := []CompletionResult{}
 	for _, image := range response.Data {
 		if image.B64JSON != "" {
-			results = append(results, CompletionResult{Type: ResultTypeImage, Value: "data:image/png;base64," + image.B64JSON})
+			results = append(results, newImageResult("data:image/png;base64,"+image.B64JSON))
 		} else if image.URL != "" {
-			results = append(results, CompletionResult{Type: ResultTypeImage, Value: image.URL})
+			results = append(results, newImageResult(image.URL))
 		}
 	}
 	return &Completion{Result: results}, nil

@@ -65,7 +65,7 @@ func TestOpenAIEmbeddingsUseSDKAndSortResults(t *testing.T) {
 	if len(result.Results) != 2 || result.Results[0].Outputs[0].Values[0] != 0.1 || result.Results[1].Outputs[0].Values[0] != 0.3 {
 		t.Fatalf("result = %#v", result)
 	}
-	if result.Usage == nil || result.Usage.InputTokens != 5 || result.Usage.InputTextTokens != 5 {
+	if result.Usage == nil || count(result.Usage.InputTokens) != 5 || count(result.Usage.InputTextTokens) != 5 {
 		t.Fatalf("usage = %#v", result.Usage)
 	}
 
@@ -197,10 +197,10 @@ func TestOpenAIResponsesStreamingRequestPath(t *testing.T) {
 		t.Fatalf("payload = %#v", got)
 	}
 	completion := stream.Completion()
-	if len(completion.Result) != 1 || completion.Result[0].Value != "hello world" {
+	if len(completion.Result) != 1 || completion.Result[0].Type() != ResultTypeText || completion.Result[0].String() != "hello world" {
 		t.Fatalf("stream completion = %#v", completion.Result)
 	}
-	if completion.TokenUsage == nil || completion.TokenUsage.Total != 5 || completion.Conversation == nil {
+	if completion.TokenUsage == nil || count(completion.TokenUsage.Total) != 5 || completion.Conversation == nil {
 		t.Fatalf("stream completion = %#v", completion)
 	}
 }
@@ -212,7 +212,7 @@ func TestOpenAIHelperBranches(t *testing.T) {
 		t.Fatal("zero usage should be nil")
 	}
 	usage := openAIUsage(7, 3, 10, 2)
-	if usage.PromptNew != 5 || usage.PromptCached != 2 {
+	if count(usage.PromptNew) != 5 || count(usage.PromptCached) != 2 {
 		t.Fatalf("usage = %#v", usage)
 	}
 	if got := safeJSONParse(""); got != nil {
@@ -283,10 +283,10 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 		t.Fatalf("json-restored input texts = %#v", restoredTexts)
 	}
 	if got := completionResultsToText([]CompletionResult{
-		{Type: ResultTypeText, Value: "hello"},
-		{Type: ResultTypeJSON, Value: `{"ok":true}`},
-		{Type: ResultTypeJSON, Value: map[string]any{"n": 1}},
-		{Type: ResultTypeImage, Value: "ignored"},
+		newTextResult("hello"),
+		common.NewJSONResult(`{"ok":true}`),
+		common.NewJSONResult(map[string]any{"n": 1}),
+		newImageResult("ignored"),
 	}); got != `hello{"ok":true}{"n":1}` {
 		t.Fatalf("completion text = %q", got)
 	}
@@ -308,11 +308,11 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 	state := buildOpenAIResponsesConversation(responses.ResponseInputParam{
 		responses.ResponseInputItemParamOfMessage("question", responses.EasyInputMessageRoleUser),
 	}, &Completion{
-		Result: []CompletionResult{{Type: ResultTypeJSON, Value: map[string]any{"answer": "ok"}}},
+		Result: []CompletionResult{common.NewJSONResult(map[string]any{"answer": "ok"})},
 		ToolUse: []ToolUse{{
 			ID:        "call_2",
 			ToolName:  "lookup",
-			ToolInput: map[string]any{"q": "kyoto"},
+			ToolInput: toolInputObject(map[string]any{"q": "kyoto"}),
 		}},
 	}, ExecutionOptions{Conversation: openAIResponsesConversationState{Turn: 4}})
 	if state.Turn != 5 || !openAIResponsesInputHasToolItems(state.Items) {
@@ -412,16 +412,16 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 		t.Fatal(err)
 	}
 	completion := extractOpenAIResponseCompletion(&response, true)
-	if completion.OriginalResponse == nil || len(completion.Result) != 2 || completion.Result[1].Value != "data:image/png;base64,aW1n" {
+	if completion.OriginalResponse == nil || len(completion.Result) != 2 || completion.Result[1].Type() != ResultTypeImage || completion.Result[1].String() != "data:image/png;base64,aW1n" {
 		t.Fatalf("completion result = %#v", completion)
 	}
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ID != "call_1" {
 		t.Fatalf("tool use = %#v", completion.ToolUse)
 	}
-	if empty := extractOpenAIResponseCompletion(&responses.Response{Status: "completed"}, false); len(empty.Result) != 1 || empty.Result[0].Value != "" {
+	if empty := extractOpenAIResponseCompletion(&responses.Response{Status: "completed"}, false); len(empty.Result) != 1 || empty.Result[0].Type() != ResultTypeText || empty.Result[0].String() != "" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
-	responseTools := openAIResponseTools([]ToolDefinition{{Name: "lookup", Description: "Lookup", InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}})
+	responseTools := openAIResponseTools([]ToolDefinition{{Name: "lookup", Description: ptr("Lookup"), InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}})
 	if len(responseTools) != 1 || responseTools[0].OfFunction == nil || responseTools[0].OfFunction.Name != "lookup" {
 		t.Fatalf("response tools = %#v", responseTools)
 	}
@@ -470,7 +470,7 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 		t.Fatalf("delta = %#v", delta)
 	}
 	text := state.chunk(openAIStreamEvent(t, `{"type":"response.output_text.delta","delta":"hello"}`))
-	if len(text.Result) != 1 || text.Result[0].Value != "hello" {
+	if len(text.Result) != 1 || text.Result[0].Type() != ResultTypeText || text.Result[0].String() != "hello" {
 		t.Fatalf("text = %#v", text)
 	}
 	completed := state.chunk(openAIStreamEvent(t, `{
@@ -485,7 +485,7 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 			"usage":{"input_tokens":2,"output_tokens":3,"total_tokens":5}
 		}
 	}`))
-	if completed.FinishReason != "tool_use" || completed.TokenUsage == nil || completed.TokenUsage.Total != 5 {
+	if completed.FinishReason != "tool_use" || completed.TokenUsage == nil || count(completed.TokenUsage.Total) != 5 {
 		t.Fatalf("completed = %#v", completed)
 	}
 	incomplete := state.chunk(openAIStreamEvent(t, `{
