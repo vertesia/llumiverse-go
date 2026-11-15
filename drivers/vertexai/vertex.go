@@ -384,15 +384,18 @@ func optionFloatValue(options map[string]any, key string) any {
 // Execute runs a single non-streaming completion against Gemini, Imagen, or a
 // Claude partner model depending on the requested model.
 func (d *VertexAIDriver) Execute(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (*ExecutionResponse, error) {
-	resp, err := executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
-	return resp, d.formatPromptError(err, options.Model, "execute")
+	return executeWithPrompt(ctx, vertexPromptDriver{d, "execute"}, segments, options, d.requestTextCompletion)
 }
 
 // Stream runs a streaming completion against Gemini or a Claude partner model
-// (Imagen does not support streaming).
+// (Imagen does not support streaming). A stream left unconsumed is released
+// after DriverOptions.StreamStartTimeout.
 func (d *VertexAIDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
-	return stream, d.formatPromptError(err, options.Model, "stream")
+	stream, err := streamWithPrompt(ctx, vertexPromptDriver{d, "stream"}, segments, options, d.requestTextCompletionStream)
+	if err != nil {
+		return nil, err
+	}
+	return leaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // requestTextCompletion routes a non-streaming request by model to the Imagen,

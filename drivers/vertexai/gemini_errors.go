@@ -1,6 +1,7 @@
 package vertexai
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -167,20 +168,34 @@ func formatGeminiError(err error, model string, operation string) error {
 	return withVertexStorageHint(formatted)
 }
 
-// formatPromptError classifies an error that Execute or Stream returns before a
-// request is sent, most often one raised while building the prompt (an inline
-// media cap, an unusable conversation). As the TS client does, it goes through the
-// model's error formatter instead of surfacing as an unclassified failure. Errors
-// already classified pass through.
-func (d *VertexAIDriver) formatPromptError(err error, model string, operation string) error {
-	if err == nil {
-		return nil
+// formatPromptError classifies an error raised while building the prompt (an
+// inline media cap, an unreadable file). As the TS client does, it goes through
+// the model's error formatter instead of surfacing as an unclassified failure.
+// Errors already classified, and the caller's own cancellation, pass through.
+func (d *VertexAIDriver) formatPromptError(ctx context.Context, err error, model string, operation string) error {
+	if err == nil || ctx.Err() != nil {
+		return err
 	}
 	var llumiErr *LlumiverseError
 	if errors.As(err, &llumiErr) {
 		return err
 	}
 	return d.formatError(err, model, operation)
+}
+
+// vertexPromptDriver is the driver handed to the shared execute and stream flow:
+// it classifies a failure to build the prompt (an inline media limit, an
+// unreadable file) with the Vertex error formatter for that operation, before
+// the shared flow would wrap it generically.
+type vertexPromptDriver struct {
+	*VertexAIDriver
+	operation string
+}
+
+// CreatePrompt builds the prompt and classifies its error for the operation.
+func (p vertexPromptDriver) CreatePrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (any, error) {
+	prompt, err := p.VertexAIDriver.CreatePrompt(ctx, segments, options)
+	return prompt, p.formatPromptError(ctx, err, options.Model, p.operation)
 }
 
 // withVertexStorageHint appends the bucket-permission hint to a 403 that names

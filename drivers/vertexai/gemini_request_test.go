@@ -2,11 +2,35 @@ package vertexai
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
+
+	"github.com/vertesia/llumiverse-go/core"
 )
+
+// TestVertexStreamLeaseReleasesUnreadStream checks that an unread stream is closed
+// after DriverOptions.StreamStartTimeout (core.LeaseCompletionStream).
+func TestVertexStreamLeaseReleasesUnreadStream(t *testing.T) {
+	t.Parallel()
+
+	server := &recordingGeminiServer{}
+	httpServer := httptest.NewServer(server.handler(t))
+	defer httpServer.Close()
+	driver := newTestVertexDriver(t, httpServer.URL)
+	driver.options.StreamStartTimeout = 10 * time.Millisecond
+	stream, err := driver.Stream(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "Hi"}}, ExecutionOptions{Model: "gemini-2.5-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if _, err := stream.Recv(); !errors.Is(err, core.ErrCompletionStreamNotConsumed) {
+		t.Fatalf("Recv after the lease = %v", err)
+	}
+}
 
 // TestGeminiNamedToolChoice mirrors the tool_choice cases of gemini-orphaned-tool-result.test.ts.
 func TestGeminiNamedToolChoice(t *testing.T) {
