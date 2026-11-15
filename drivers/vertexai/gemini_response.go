@@ -11,6 +11,8 @@ type geminiCandidate struct {
 	FinishMessage string          `json:"finishMessage"`
 	SafetyRatings json.RawMessage `json:"safetyRatings,omitempty"`
 	Content       geminiContent   `json:"content"`
+	// ContinuationToken resumes a long decode that one request could not finish.
+	ContinuationToken string `json:"continuationToken,omitempty"`
 }
 
 // geminiUsageMetadata is the token accounting of a generateContent response.

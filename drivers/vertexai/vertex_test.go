@@ -1119,7 +1119,7 @@ func TestVertexListModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 3 || models[0].ID != "publishers/anthropic/models/claude-a" {
+	if len(models) != 2 || models[0].ID != "publishers/anthropic/models/claude-a" {
 		t.Fatalf("models = %#v", models)
 	}
 }

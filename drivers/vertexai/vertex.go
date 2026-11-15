@@ -772,11 +772,17 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 			if params != nil && stringValue(params.Text) != "" && !strings.Contains(strings.ToLower(model.Name), strings.ToLower(*params.Text)) {
 				continue
 			}
+			// Only families with a request path are listed; embedding, Live and other
+			// special-purpose models are left out.
+			if !isListedVertexPublisherModel(item.publisher, model.Name) {
+				continue
+			}
+			short := shortResourceName(model.Name)
 			name := model.DisplayName
 			if name == "" {
-				name = shortResourceName(model.Name)
+				name = short
 			}
-			models = append(models, AIModel{
+			listed := AIModel{
 				ID:          model.Name,
 				Name:        name,
 				Provider:    string(ProviderVertexAI),
@@ -784,7 +790,19 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 				Type:        ptr(ModelType("text")),
 				CanStream:   ptr(true),
 				ToolSupport: ptr(true),
-			})
+			}
+			if item.publisher == "google" && isGeminiWithoutRegionalEndpoints(short) {
+				// Models without regional endpoints are listed once, under global.
+				listed.ID, listed.Name = "locations/global/"+model.Name, "Global "+short
+				models = append(models, listed)
+				continue
+			}
+			models = append(models, listed)
+			if hasVertexGlobalListing(item.publisher, model.Name) {
+				global := listed
+				global.ID, global.Name = "locations/global/"+model.Name, "Global "+short
+				models = append(models, global)
+			}
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })

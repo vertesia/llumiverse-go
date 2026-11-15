@@ -17,7 +17,7 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 		return nil, err
 	}
 	prompt = geminiConversationInput(options.Conversation, prompt)
-	endpoint, err := d.vertexEndpoint(options.Model, "generateContent")
+	endpoint, err := d.geminiEndpoint(options.Model, "generateContent")
 	if err != nil {
 		return nil, err
 	}
@@ -26,12 +26,27 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 		return nil, d.formatError(err, options.Model, "execute")
 	}
 	addGeminiServiceTierHeaders(headers, options.ModelOptions)
+	payload := d.geminiPayload(prompt, options)
 	var response geminiResponse
-	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, d.geminiPayload(prompt, options), &response); err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	if err := checkGeminiResponseFinishReasons(response); err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
+	for token := ""; ; {
+		var hop geminiResponse
+		if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, payload, &hop); err != nil {
+			return nil, d.formatError(err, options.Model, "execute")
+		}
+		if err := checkGeminiResponseFinishReasons(hop); err != nil {
+			return nil, d.formatError(err, options.Model, "execute")
+		}
+		if token == "" {
+			response = hop
+		} else {
+			response = mergeGeminiContinuation(response, hop)
+		}
+		next := geminiContinuationToken(hop)
+		if next == "" || next == token {
+			break
+		}
+		token = next
+		payload["continuationToken"] = token
 	}
 	if len(response.Candidates) > 0 {
 		assignGeminiFunctionCallIDs(response.Candidates[0].Content.Parts, collectGeminiFunctionCallIDs(prompt.Contents))
@@ -48,7 +63,7 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 	if err := validateGeminiRequest(options, "stream"); err != nil {
 		return nil, err
 	}
-	endpoint, err := d.vertexEndpoint(options.Model, "streamGenerateContent")
+	endpoint, err := d.geminiEndpoint(options.Model, "streamGenerateContent")
 	if err != nil {
 		return nil, err
 	}
@@ -77,39 +92,87 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 	var (
 		mu          sync.Mutex
 		nativeParts []geminiPart
+		current     = body
+		closed      bool
 	)
+	closeBody := func() error {
+		mu.Lock()
+		defer mu.Unlock()
+		closed = true
+		return current.Close()
+	}
 	go func() {
 		defer close(ch)
-		err := scanSSE(body, func(event sseEvent) error {
-			if event.Data == "" {
+		// A long decode spans several requests (hops); each resumes from the
+		// continuation token the previous one ended with, and each chunk reports
+		// the usage of the finished hops plus its own.
+		var finished geminiUsageMetadata
+		hop := geminiStreamHop{}
+		for hopIndex := 0; ; hopIndex++ {
+			var hopUsage *geminiUsageMetadata
+			err := scanSSE(current, func(event sseEvent) error {
+				if event.Data == "" {
+					return nil
+				}
+				var response geminiResponse
+				if err := json.Unmarshal([]byte(event.Data), &response); err != nil {
+					return err
+				}
+				if err := checkGeminiResponseFinishReasons(response); err != nil {
+					return err
+				}
+				hop.observe(&response)
+				if response.UsageMetadata.TotalTokenCount > 0 {
+					if hopIndex > 0 {
+						response.UsageMetadata = addGeminiUsage(finished, response.UsageMetadata)
+					}
+					usage := response.UsageMetadata
+					hopUsage = &usage
+				}
+				for _, candidate := range response.Candidates {
+					assignGeminiFunctionCallIDs(candidate.Content.Parts, usedCallIDs)
+				}
+				if len(response.Candidates) > 0 && geminiIsModelContent(response.Candidates[0].Content) {
+					mu.Lock()
+					nativeParts = appendGeminiStreamParts(nativeParts, response.Candidates[0].Content.Parts)
+					mu.Unlock()
+				}
+				chunk := geminiResponseToChunk(response, includeThoughts)
+				if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
+					ch <- streamItem{Chunk: chunk}
+				}
 				return nil
+			})
+			if err != nil && !errors.Is(err, io.EOF) {
+				ch <- streamItem{Err: d.formatError(err, options.Model, "stream")}
+				return
 			}
-			var response geminiResponse
-			if err := json.Unmarshal([]byte(event.Data), &response); err != nil {
-				return err
+			if hopUsage != nil {
+				finished = *hopUsage
 			}
-			if err := checkGeminiResponseFinishReasons(response); err != nil {
-				return err
+			token := hop.resumeToken()
+			if token == "" {
+				return
 			}
-			for _, candidate := range response.Candidates {
-				assignGeminiFunctionCallIDs(candidate.Content.Parts, usedCallIDs)
+			payload["continuationToken"] = token
+			next, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
+			if err != nil {
+				ch <- streamItem{Err: d.formatError(err, options.Model, "stream")}
+				return
 			}
-			if len(response.Candidates) > 0 && geminiIsModelContent(response.Candidates[0].Content) {
-				mu.Lock()
-				nativeParts = appendGeminiStreamParts(nativeParts, response.Candidates[0].Content.Parts)
+			mu.Lock()
+			if closed {
 				mu.Unlock()
+				_ = next.Close()
+				return
 			}
-			chunk := geminiResponseToChunk(response, includeThoughts)
-			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
-				ch <- streamItem{Chunk: chunk}
-			}
-			return nil
-		})
-		if err != nil && !errors.Is(err, io.EOF) {
-			ch <- streamItem{Err: d.formatError(err, options.Model, "stream")}
+			_ = current.Close()
+			current = next
+			mu.Unlock()
+			hop = geminiStreamHop{startToken: token}
 		}
 	}()
-	return newChannelStreamWithFinalizer(ch, completion, body.Close, func(resp *ExecutionResponse) {
+	return newChannelStreamWithFinalizer(ch, completion, closeBody, func(resp *ExecutionResponse) {
 		mu.Lock()
 		parts := append([]geminiPart(nil), nativeParts...)
 		mu.Unlock()
