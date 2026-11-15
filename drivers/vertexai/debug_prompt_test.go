@@ -101,9 +101,21 @@ func TestVertexDebugPromptLeavesOtherPromptsUnchanged(t *testing.T) {
 	driver := &VertexAIDriver{}
 	claudePrompt := internalclaude.Prompt{}
 	if _, ok := driver.FormatDebugPrompt(claudePrompt).(internalclaude.Prompt); !ok {
-		t.Fatal("Claude prompt was not returned unchanged")
+		t.Fatal("Claude prompt was not formatted as a Claude prompt")
 	}
 	if got := driver.FormatDebugPrompt("raw"); got != "raw" {
 		t.Fatalf("other prompt = %#v", got)
+	}
+
+	// Claude prompts have their inline images truncated too.
+	encoded := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte("p"), 300))
+	prompt, err := internalclaude.FormatPrompt(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "Describe", Files: []DataSource{BytesDataSource{FileName: "a.png", MIME: "image/png", Data: bytes.Repeat([]byte("p"), 300)}}}}, ExecutionOptions{Model: "claude-sonnet-4-6"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	debug, _ := json.Marshal(driver.FormatDebugPrompt(prompt))
+	sent, _ := json.Marshal(prompt)
+	if strings.Contains(string(debug), encoded) || !strings.Contains(string(debug), core.BinaryTruncatedMarker) || !strings.Contains(string(sent), encoded) {
+		t.Fatalf("Claude debug prompt = %s", debug)
 	}
 }

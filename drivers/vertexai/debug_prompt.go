@@ -1,17 +1,22 @@
 package vertexai
 
-import "github.com/vertesia/llumiverse-go/core"
+import (
+	"github.com/vertesia/llumiverse-go/core"
+	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
+)
 
 // FormatDebugPrompt returns the prompt to report as ExecutionResponse.Prompt:
-// Gemini and Imagen prompts with their inline base64 media truncated, as the TS
-// client's formatDebugPrompt does. The prompt being sent is never modified. Claude
-// prompts and any other prompt type are returned unchanged.
+// Gemini, Imagen and Claude prompts with their inline base64 media truncated, as
+// the TS client's formatDebugPrompt does. The prompt being sent is never
+// modified. Any other prompt type is returned unchanged.
 func (d *VertexAIDriver) FormatDebugPrompt(prompt any) any {
 	switch value := prompt.(type) {
 	case geminiPrompt:
 		return formatGeminiDebugPrompt(value)
 	case vertexImagenPrompt:
 		return formatImagenDebugPrompt(value)
+	case internalclaude.Prompt:
+		return internalclaude.FormatDebugPrompt(value)
 	default:
 		return prompt
 	}
