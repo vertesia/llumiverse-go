@@ -3,7 +3,6 @@ package bedrock
 import (
 	"context"
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -87,9 +86,14 @@ func TestBedrockToolChoice(t *testing.T) {
 		if runtime.got.ToolConfig.ToolChoice != nil {
 			t.Fatalf("tool choice = %#v", runtime.got.ToolConfig.ToolChoice)
 		}
-		// Thinking is left as the caller configured it, never disabled for the turn.
-		if got := bedrockAdditionalFieldsJSON(t, runtime); strings.Contains(got, "disabled") {
-			t.Fatalf("additional fields = %s", got)
+		// Thinking is left as the caller configured it: the forced turn sends the
+		// same fields as an unforced one.
+		unforced, err := bedrockToolChoiceRequest(t, "anthropic.claude-fable-5", bedrockToolChoiceTools, map[string]any{"effort": "medium"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, want := bedrockAdditionalFieldsJSON(t, runtime), bedrockAdditionalFieldsJSON(t, unforced); got != want {
+			t.Fatalf("additional fields = %s, want %s", got, want)
 		}
 	})
 	for name, c := range map[string]struct {

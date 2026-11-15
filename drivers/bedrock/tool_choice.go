@@ -6,6 +6,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/vertesia/llumiverse-go/core"
 )
 
 // toolChoiceConfigurationErrorName names the error a forced tool turn fails
@@ -38,8 +39,8 @@ func bedrockSupportsForcedToolChoice(model string) bool {
 // bedrockClaudeOnlyAdaptiveThinking reports whether a Claude family accepts only
 // adaptive thinking (Fable and Mythos), so its thinking cannot be disabled.
 func bedrockClaudeOnlyAdaptiveThinking(model string) bool {
-	model = strings.ToLower(model)
-	return strings.Contains(model, "claude-fable") || strings.Contains(model, "claude-mythos")
+	version, ok := core.ParseClaudeVersion(model)
+	return ok && (version.Variant == "fable" || version.Variant == "mythos")
 }
 
 // bedrockToolChoice maps the tool_choice ("auto", "none", "any", "required") and
