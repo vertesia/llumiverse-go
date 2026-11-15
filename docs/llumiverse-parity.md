@@ -33,8 +33,8 @@ A commit that spans several areas appears in each area's table with that area's 
 
 ## Result (parity point `73dfc90`)
 
-Of the 140 commits, 96 were ported in at least one area, 12 were already covered, and 32 were
-skipped. Counted per area row (229 rows), the result is 150 ported, 31 covered and 48 skipped.
+Of the 140 commits, 101 were ported in at least one area, 11 were already covered, and 28 were
+skipped. Counted per area row (248 rows), the result is 167 ported, 34 covered and 47 skipped.
 
 ### Known differences that remain
 
@@ -53,6 +53,13 @@ mistake them for missed commits.
 - **Bedrock Mantle** takes a Bedrock API key or an `aws.CredentialsProvider`; the TS client's
   `AWS_BEARER_TOKEN_BEDROCK` and profile lookups are left to the caller's AWS configuration. Model
   listing reports ID, name, owner and streaming, not the catalogue's modalities and tool support.
+- **Groq, Mistral AI, Together AI, OpenRouter, xAI:** listings report what each model API returns
+  (Together and OpenRouter modalities, OpenRouter tool support), not catalogue capabilities, and
+  OpenRouter leaves out dedicated-endpoint models by name rather than by catalogue family. Provider
+  options (`reasoning_format`, Mistral's `random_seed`/`safe_prompt`/`prompt_mode`, OpenRouter's
+  `provider_*`) are read from ModelOptions without checking `_option_id`. The Mistral conversation
+  holds wire-shape messages; the TS client's camelCase messages are read but not written. The xAI
+  image prompt is built from the prompt segments, not from a Responses prompt.
 - **Claude on Bedrock:** application inference profiles, custom models and provisioned throughput
   stay on Converse. Resolving their base model needs lookups the Go client does not make.
 - **Gemini context caches:** no pluggable cross-process coordinator, and a fixed 30 s cooldown after
@@ -160,14 +167,14 @@ mistake them for missed commits.
 | --- | --- | --- | --- | --- |
 | `d74f811` | 2026-06-03 | feat: Debug prompt, binary truncation (#438) | ported | The Responses and Chat Completions drivers implement `FormatDebugPrompt`, returning a copy with base64 data URLs truncated while the request keeps the full payload; `TestOpenAIFormatDebugPromptTruncatesDataURLs`, `TestOpenAIExecuteReturnsTruncatedDebugPrompt`. Vertex AI MaaS prompts are not dispatched to `openai.FormatChatCompletionsDebugPrompt` yet (Vertex follow-up). |
 | `6c39d20` | 2026-06-14 | fix(drivers): drop orphaned tool_result blocks before sending (Claude, Bedrock, OpenAI, Gemini) (#463) | ported | Responses drops `function_call_output` items with no matching call and gives an orphaned call a synthetic output; Chat Completions does the same for tool messages; `TestOpenAIResponsesDropsOrphanedToolResults`, `TestChatCompletionsConversationRepair`. |
-| `0ea356e` | 2026-06-16 | Refactor TogetherAI driver onto OpenAI base (#471) | ported | OpenAI base part: cached tokens are read from `input_tokens_details`, `prompt_tokens_details` or a top-level `cached_tokens`, as compatible Responses endpoints report them; `TestOpenAIResponsesUsageReadsCompatibleCachedTokens`. TogetherAI parts skip: llumiverse-go has no TogetherAI driver. |
+| `0ea356e` | 2026-06-16 | Refactor TogetherAI driver onto OpenAI base (#471) | ported | OpenAI base part: cached tokens are read from `input_tokens_details`, `prompt_tokens_details` or a top-level `cached_tokens`, as compatible Responses endpoints report them; `TestOpenAIResponsesUsageReadsCompatibleCachedTokens`. The TogetherAI part is in the Groq, Mistral AI, Together AI, OpenRouter, xAI area. |
 | `82d587e` | 2026-06-16 | fix: bring main OpenAI changes to preview, fix openai parsing bugs (#468) | ported | Streamed text sent only in `response.output_text.done` is kept, a refusal ends the stream with an error, and `error` events (and the legacy `response.error`) surface with their code; `TestOpenAIResponsesStreamUsesTextDoneWithoutDeltas`, `TestOpenAIResponsesStreamRefusalAndErrorEvents`. |
 | `19f6e02` | 2026-06-24 | feat: support Grok models on Google Gemini Enterprise Agent Platform (Vertex AI) (#388) | ported | xAI Grok models on Vertex AI route through the MaaS Chat Completions path (global and `us` endpoints, family fallback for unlisted `xai/` ids); `TestVertexMaaSRoute`, `TestVertexMaaSExecuteAndStream`. |
-| `f7e2931` | 2026-07-02 | fix(togetherai): use Chat Completions for vision (Together lacks /v1/responses) (#507) | ported | Shared part: Responses file parts map images (or untyped files) to `input_image`, PDFs to `input_file` and text files to `input_text`, skipping other types; `TestOpenAIResponsesAttachments`. TogetherAI and Groq parts skip: no such drivers. |
+| `f7e2931` | 2026-07-02 | fix(togetherai): use Chat Completions for vision (Together lacks /v1/responses) (#507) | ported | Shared part: Responses file parts map images (or untyped files) to `input_image`, PDFs to `input_file` and text files to `input_text`, skipping other types; `TestOpenAIResponsesAttachments`. The TogetherAI and Groq parts are in the Groq, Mistral AI, Together AI, OpenRouter, xAI area. |
 | `335bec0` | 2026-07-03 | feat: add Vertex MaaS and shared Chat Completions support (#506) | ported | `openai.ChatCompletionsProtocol` (exported, transport-agnostic) and `NewOpenAIChatCompletionsDriver`: tool-choice mapping, orphan repair, DeepSeek reasoning replay, think-block splitting, schema in prompt, positional stream tool ids. Vertex AI MaaS models (Llama, DeepSeek, Qwen, GLM, Kimi, MiniMax, gpt-oss, Gemma, Grok) route through it via `drivers/vertexai/maas.go`; `TestChatCompletionsPayload`, `TestChatCompletionsStream`, `TestChatCompletionsReasoningAndThinkBlocks`, `TestOpenAIChatCompletionsDriverSDKTransport`, `TestVertexMaaSRoute`, `TestVertexMaaSExecuteAndStream`. |
 | `4c470e3` | 2026-07-10 | feat: bedrock mantle models (#522) | ported | New `drivers/bedrockmantle`: models route by family to Responses on `/openai/v1`, Chat Completions on `/v1` (response_format, plain tool schemas, the schema also in the prompt for Magistral) or Claude Messages on `/anthropic`; AWS credentials become a per-request Bedrock bearer token on the OpenAI endpoints and SigV4 for `bedrock-mantle` on Messages, or a Bedrock API key is sent everywhere; listing keeps routable models with their publisher and display name. Later Mantle changes are included: region prefixes stripped (#582), tool changes on Mantle Claude (#779), Gemma 4 on Responses and publisher-qualified names (#787), the pinned `anthropic-version` (#837), per-request timeouts (#587); option metadata and logging have no Go counterpart. TestModelProtocol, TestBearerTokenFormat, TestResponsesUseOpenAIEndpointWithBearerToken, TestChatCompletionsUseV1WithResponseFormat, TestClaudeUsesSignedMessagesAPI, TestAPIKeyIsSentAsBearerEverywhere, TestListModelsKeepsRoutableModels, TestTransportRefusesOtherHostsAndRedirects. |
 | `0b5adb7` | 2026-07-13 | feat: expand Bedrock model support (#526) | ported | OpenAI part: the Chat Completions changes are in the shared protocol ported for #506. The Mantle part (three protocols by model family) is in `drivers/bedrockmantle` (see #522); Bedrock parts are in the Bedrock table. |
-| `eb77310` | 2026-07-13 | feat: unify OpenAI-compatible drivers (#528) | covered | The unification is the shared Chat Completions protocol (#506) and the provider-parameterized `OpenAICompatibleDriver`; `TestChatCompletionsPayload`. Groq, Mistral, Together and xAI driver parts skip: no such drivers. |
+| `eb77310` | 2026-07-13 | feat: unify OpenAI-compatible drivers (#528) | covered | The unification is the shared Chat Completions protocol (#506) and the provider-parameterized `OpenAICompatibleDriver`; `TestChatCompletionsPayload`. The Groq, Mistral, Together and xAI driver parts are in their own area. |
 | `2a38024` | 2026-07-14 | feat: improve implicit prompt caching (#531) | ported | The Responses request sends `prompt_cache_key` from ModelOptions or `ExecutionOptions.PromptCacheKey`; `TestOpenAIResponsesExplicitPromptCacheBoundary`. |
 | `2df2ace` | 2026-07-14 | feat: add explicit OpenAI cache boundaries (#535) | ported | On GPT-5.6 and later with a cache key and two or more user turns, the latest user message with an image or file (else the second-to-last) gets an explicit breakpoint and `prompt_cache_options.mode` explicit; a caller's own breakpoint is kept and the stored conversation is not marked; `TestOpenAIResponsesExplicitPromptCacheBoundary`. |
 | `c8f5863` | 2026-07-16 | feat: preserve prompt caches across result schemas (#541) | ported | With `PromptCacheSchemaSuffix` the schema goes in a final user message and the native format becomes `json_object`, so the cached prefix does not depend on the schema; `TestOpenAIResponsesSchemaSuffixKeepsPromptCache`. |
@@ -312,6 +319,41 @@ New `drivers/azurefoundry` driver.
 | `97f7380` | 2026-11-06 | feat: support GPT Image 2.6 options and GIF/SVG output (#860) | covered | GPT Image options and output formats are built by drivers/openai (OpenAI area); Foundry and Azure OpenAI image requests delegate to it. |
 | `80e7b80` | 2026-11-13 | feat(azure): bring the Microsoft Foundry and Azure OpenAI drivers up to date (#896) | ported | API-key auth on the resource endpoint, no redirects with keys, routing of bare names by source model, listing filter, `AzureOpenAIDriver` on the v1 API with the deployment-scoped model. Skipped: the legacy dated `api-version` Azure OpenAI API and the image_generation tool header. |
 
+## Groq, Mistral AI, Together AI, OpenRouter, xAI
+
+`drivers/groq`, `drivers/togetherai` and `drivers/openrouter` (on the shared Chat Completions protocol, with
+`PreparePayload` and `NormalizeResponse` hooks), `drivers/xai` (Responses through `drivers/openai`, plus the
+Images API) and `drivers/mistral` (the native Mistral API). They port the TS drivers as of `73dfc90`, so every
+commit below is reproduced in its final form.
+
+| Commit | Date | Subject | Decision | Reason |
+| --- | --- | --- | --- | --- |
+| `d74f811` | 2026-06-03 | feat: Debug prompt, binary truncation (#438) | ported | Groq, Together and OpenRouter inherit the Chat Completions debug prompt; Mistral truncates inline image and audio chunks, xAI the images of an image prompt; `TestMistralFormatDebugPromptTruncatesMedia`, `TestXAIImageEditsAndStream`. |
+| `0ea356e` | 2026-06-16 | Refactor TogetherAI driver onto OpenAI base (#471) | ported | Together runs on the shared Chat Completions driver; `TestTogetherPayload`. |
+| `f7e2931` | 2026-07-02 | fix(togetherai): use Chat Completions for vision (Together lacks /v1/responses) (#507) | ported | Together sends user images as `image_url` parts and assistant and tool content as text, images named by URL; `TestTogetherPayload`. |
+| `335bec0` | 2026-07-03 | feat: add Vertex MaaS and shared Chat Completions support (#506) | ported | Groq, Together and OpenRouter build on `openai.ChatCompletionsProtocol`; `TestGroqUsageAndAuth`, `TestTogetherPayload`, `TestOpenRouterPayloadAndHeaders`. |
+| `eb77310` | 2026-07-13 | feat: unify OpenAI-compatible drivers (#528) | ported | Groq (schema in the prompt, plain tool schemas, `max_completion_tokens`), Together (schema in the prompt, non-strict tools) and OpenRouter (response_format, plain tool schemas) on `OpenAIChatCompletionsDriver`; xAI on `OpenAICompatibleDriver`; Mistral on its native API with the schema as a system instruction; `TestGroqStructuredOutputsByModel`, `TestTogetherPayload`, `TestXAILanguageModelsUseResponses`, `TestMistralResultSchemaInPromptAndHiddenThoughts`. |
+| `e8b5b95` | 2026-08-04 | feat(common): define the API contracts as runtime Zod schemas (#565) | covered | TS type refactors in the drivers; the contracts are the generated wire types. |
+| `c71fb9b` | 2026-08-06 | feat: preserve native thinking output across providers (#532) | ported | Mistral thinking chunks become thoughts results (unless `include_thoughts` is false) and stay in the conversation, merged across stream chunks with their signatures; Groq, Together and OpenRouter reasoning fields go through the shared protocol; `TestMistralPromptAndRequest`, `TestMistralStream`, `TestOpenRouterPayloadAndHeaders`. |
+| `105b57f` | 2026-08-12 | fix: harden model catalog resolution (#579) | skip | Catalogue resolution; listings use what each provider's model API reports. |
+| `a096147` | 2026-08-14 | fix: make driver cleanup in-flight safe (#587) | covered | Per-request timeouts and stream release come from the shared HTTP clients and `core.LeaseCompletionStream`. |
+| `d797068` | 2026-08-14 | feat: support xAI image generation (#591) | ported | Grok image models generate or edit images on the Images API with the aspect_ratio, resolution, quality, response_format and n options, and a rejected request is the completion's error; `TestXAIImageGeneration`, `TestXAIImageEditsAndStream`, `TestXAIImageRejectionIsTheCompletionError`, `TestXAIListModels`. |
+| `c6d8566` | 2026-08-28 | feat: add native OpenRouter support (#624) | ported | OpenRouter driver: app attribution headers, `provider_*` routing preferences, assistant reasoning replayed as `reasoning`, stream error chunks as errors with their status, listing with modalities and tool support, multimodal embeddings; `TestOpenRouterPayloadAndHeaders`, `TestOpenRouterStreamErrorChunk`, `TestOpenRouterRefusesBadMessages`, `TestOpenRouterListModels`, `TestOpenRouterEmbeddings`. |
+| `98f5eee` | 2026-09-01 | feat: named tool choice across drivers with typed contract failures (#629) | ported | `required_tool_name` becomes a function tool_choice on Mistral, and through the shared protocol on the others; GLM 5.3 on OpenRouter also gets the prompt schema; `TestMistralPromptAndRequest`, `TestOpenRouterPayloadAndHeaders`. |
+| `a2741de` | 2026-09-14 | [Backport main] fix: preserve Chat Completions tool images (#658) | covered | Tool-result images move into a user message in the shared protocol, which these drivers use. |
+| `c1df2ee` | 2026-09-22 | feat: add bounded file audio across primary providers (#672) | ported | Groq, Together and OpenRouter refuse audio input before sending; Mistral sends `input_audio` chunks and never keeps inline audio in the conversation; `TestGroqRefusesAudioInput`, `TestOpenRouterRefusesBadMessages`, `TestMistralConversationRetention`. |
+| `f618ce7` | 2026-09-28 | feat(drivers): add a driver factory with SDK-free declarations (#698) | skip | TS driver factory; Go constructors are explicit. |
+| `cf780e4` | 2026-09-28 | feat: report one-hour cache writes and provider-reported cost in token usage (#697) | ported | OpenRouter cost (not on bring-your-own-key requests) and cache writes, Groq cached prompt tokens, and the xAI image cost in ticks of 10^-10 USD; `TestOpenRouterPayloadAndHeaders`, `TestGroqUsageAndAuth`, `TestXAIImageGeneration`. |
+| `f157a07` | 2026-10-05 | fix: preserve generated-image metadata and reject empty output (#735) | ported | xAI images keep their MIME type, and a response without a usable image is a validation_error; `TestXAIImageGeneration`, `TestXAIImageWithoutUsableImagesIsAnError`. |
+| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | ported | Groq and Together pass seed, reasoning_effort and service_tier, and merge extra_body below the fields llumiverse sets; Together sends `stop` as a list; `TestTogetherPayload`, `TestGroqStructuredOutputsByModel`. |
+| `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | skip | Logging only; Go drivers do not log. |
+| `d74c98a` | 2026-10-15 | fix: Watsonx embedding default, Groq structured outputs and smoke test follow-ups (#784) | ported | Groq part: json_schema response_format on gpt-oss and Qwen 3.8+, strict except on gpt-oss-safeguard, and never with tools; `TestGroqStructuredOutputsByModel`. Watsonx part skips: no watsonx driver. |
+| `2edad30` | 2026-10-15 | feat: describe Together Qwen reasoning controls, report Together streamed usage, and fix Groq Qwen version parsing (#792) | ported | Together switches reasoning off with `reasoning.enabled` on Qwen 3.5-3.7, asks for streamed usage and reads usage from a stream choice; Qwen minor versions follow a dot; `TestTogetherPayload`, `TestTogetherKeepsEffortOnQwen38`, `TestTogetherStreamReadsChoiceUsage`, `TestGroqStructuredOutputsByModel`. The option descriptions are catalogue metadata. |
+| `71d2a55` | 2026-10-15 | [Backport main] fix: model maintenance for Gemini 4, Claude 5.5, DeepSeek V4.1 Flash, GLM 5.3 and Bedrock listings (#787) | ported | Mistral passes any effort through as reasoning_effort for the provider to validate; `TestMistralPromptAndRequest`. |
+| `2c7fc5f` | 2026-10-15 | [Backport main] fix: MiniMax structured output and Gemini explicit-cache bugs (#790) | ported | MiniMax models on OpenRouter also get the prompt schema; `TestOpenRouterPromptSchemaOnlyForUnreliableFamilies`. |
+| `1db4375` | 2026-10-20 | chore(deps): update model provider client libraries (main) (#785) | skip | Dependency update (Groq SDK); the Go drivers use the HTTP APIs. |
+| `5719e42` | 2026-11-03 | chore(deps): update dependency together-ai to v1 (main) (#856) | skip | Together SDK; the catalogue moved to /v2/supported-models, which the Go listing reads; `TestTogetherListModelsFollowsTheCursor`. |
+
 ## Skipped and covered outside the areas
 
 | Commit | Date | Subject | Decision | Reason |
@@ -329,19 +371,13 @@ New `drivers/azurefoundry` driver.
 | `79a981d` | 2026-07-14 | fix: default streaming tool support to tool_support (#534) | skip | Capability catalogue metadata; Go has no capability catalogue. |
 | `7e691c6` | 2026-07-24 | chore(deps): update dependency @biomejs/biome to v2.5.5 (#552) | skip | Biome update. |
 | `e8b5b95` | 2026-08-04 | feat(common): define the API contracts as runtime Zod schemas (#565) | covered | API contracts as Zod schemas: covered by the generated wire types (#11); driver edits are TS type refactors. |
-| `d797068` | 2026-08-14 | feat: support xAI image generation (#591) | skip | xAI image generation; no xAI driver in Go. |
-| `c6d8566` | 2026-08-28 | feat: add native OpenRouter support (#624) | skip | Native OpenRouter driver; not a provider llumiverse-go has. |
 | `ea82cc9` | 2026-09-08 | chore(deps): update node dependencies (main) (#649) | skip | Dependency update. |
 | `51a9f91` | 2026-09-17 | chore(deps): update dependency openai to v7 (main) (#652) | skip | openai SDK v7 bump (TS SDK typing changes). |
 | `2e4de8d` | 2026-09-22 | [Backport main] chore(deps): align Zod catalog and schema tests (#685) | skip | Zod catalogue test alignment. |
 | `f618ce7` | 2026-09-28 | feat(drivers): add a driver factory with SDK-free declarations (#698) | skip | TS driver factory for lazy SDK loading; Go constructors are explicit and static. |
 | `f9c602e` | 2026-10-08 | chore(deps): update model provider client libraries (main) (#746) | skip | Dependency update. |
 | `3799add` | 2026-10-14 | [Backport main] test: update live provider smoke tests and remove redundant paths (#781) | skip | Live smoke tests and catalogue tweaks. |
-| `d74c98a` | 2026-10-15 | fix: Watsonx embedding default, Groq structured outputs and smoke test follow-ups (#784) | skip | Watsonx and Groq only. |
-| `2edad30` | 2026-10-15 | feat: describe Together Qwen reasoning controls, report Together streamed usage, and fix Groq Qwen version parsing (#792) | skip | Together and Groq only. |
-| `1db4375` | 2026-10-20 | chore(deps): update model provider client libraries (main) (#785) | skip | Dependency update (Groq SDK). |
 | `85934e5` | 2026-10-30 | chore: enable Biome 2.6 rules for YAML, Markdown and TypeScript (#841) | skip | Biome rules. |
-| `5719e42` | 2026-11-03 | chore(deps): update dependency together-ai to v1 (main) (#856) | skip | TogetherAI SDK. |
 | `63a13aa` | 2026-11-06 | fix(common): emit ModelOptionsSchema through a named type (#861) | covered | Named ModelOptions schema: covered by wire types. |
 | `21c06da` | 2026-11-06 | fix(common): export the OpenAiImageSvgOptions type (#863) | skip | TS type export. |
 | `d01fb11` | 2026-11-10 | chore(deps): update dependency @biomejs/biome to v2.6.4 (main) (#878) | skip | Biome update. |

@@ -7,8 +7,8 @@ file current when conventions change.
 
 `llumiverse-go` is a provider-neutral Go client for LLM completions, streaming,
 model listing, image generation, and embeddings across OpenAI, Anthropic Claude,
-AWS Bedrock (Converse and Mantle), Microsoft Foundry / Azure OpenAI, and the Gemini Enterprise Agent
-Platform (formerly Vertex AI). It is a Go port of the TypeScript [`vertesia/llumiverse`](https://github.com/vertesia/llumiverse)
+AWS Bedrock (Converse and Mantle), Microsoft Foundry / Azure OpenAI, Groq, Mistral AI, Together AI,
+OpenRouter, xAI, and the Gemini Enterprise Agent Platform (formerly Vertex AI). It is a Go port of the TypeScript [`vertesia/llumiverse`](https://github.com/vertesia/llumiverse)
 and intentionally keeps that project's public concepts: callers build
 `PromptSegment`s, pick a `Driver`, pass `ExecutionOptions`, and get back a
 normalized `Completion`. Training / fine-tuning APIs are out of scope.
@@ -41,7 +41,14 @@ drivers/bedrock         AWS Bedrock driver (Converse / ConverseStream / InvokeMo
 drivers/bedrockmantle   AWS Bedrock Mantle driver (Responses / Chat Completions / Claude Messages by model family)
 drivers/vertexai        Gemini Enterprise Agent Platform driver (Gemini/Imagen/Claude)
 drivers/azurefoundry    Microsoft Foundry and Azure OpenAI drivers
+drivers/groq            Groq driver (Chat Completions protocol + PreparePayload/NormalizeResponse hooks)
+drivers/togetherai      Together AI driver (same pattern)
+drivers/openrouter      OpenRouter driver (same pattern, plus multimodal embeddings)
+drivers/xai             xAI driver (Responses via drivers/openai, Grok image models on the Images API)
+drivers/mistral         Mistral AI driver (native chat API, thinking chunks, own conversation shape)
 drivers/internal/claude shared Claude prompt/stream/conversation logic
+drivers/internal/chatcompat  helpers shared by the Chat Completions-based drivers
+drivers/internal/fakehttp    recording HTTP server for offline driver tests
 wire/                   JSON shapes generated from schema/ (package wire) + helpers
 schema/                 llumiverse JSON Schema document (SOURCE) and behaviour parity point (LLUMIVERSE_PARITY)
 gen/                    separate module: the wiregen command and the pinned oapi-codegen
@@ -146,16 +153,23 @@ llumiverse-go follows the behaviour of the TypeScript llumiverse `main`, not onl
 
 ## Adding a new driver
 
-1. Create `drivers/<name>/` with a `doc.go`, the driver type implementing
-   `common.Driver`, and an `aliases.go` re-exporting the `common`/`core` names it
-   uses.
+1. Create `drivers/<name>/` with a `doc.go` and the driver type implementing
+   `common.Driver` (add `var _ common.Driver = (*XDriver)(nil)`). An `aliases.go`
+   re-exporting the `common`/`core` names it uses is optional.
+   A provider that speaks OpenAI Chat Completions embeds
+   `*openai.OpenAIChatCompletionsDriver` and puts its dialect in
+   `ChatCompletionsProtocolOptions.PreparePayload` (request body) and
+   `NormalizeResponse` (response and stream chunks), as `drivers/groq`,
+   `drivers/togetherai` and `drivers/openrouter` do; `DoAPIRequest` reaches the
+   provider's other endpoints (listings, embeddings) with the same credentials.
 2. Implement `CreatePrompt`/`Execute`/`Stream` on top of `core.ExecuteWithPrompt`
    / `core.StreamWithPrompt` and the channel-stream helpers, so error wrapping
    and JSON-result normalization stay shared.
 3. Map provider errors through a `formatError` that produces a
    `*common.LlumiverseError` with a sensible `Retryable`.
 4. Put conversation retention in `conversation.go`; reuse `core` placeholders.
-5. Add a runnable `examples/<name>-*/main.go` and unit tests with fakes.
+5. Add a runnable `examples/<name>-*/main.go` and unit tests with fakes
+   (`drivers/internal/fakehttp` serves canned HTTP responses and records requests).
 6. If it adds a public constructor/type, re-export it from the root `aliases.go`.
 
 ## CI / .github
