@@ -75,6 +75,33 @@ func TestOpenAIResponsesExplicitPromptCacheBoundary(t *testing.T) {
 	}
 }
 
+// Mirrors the TS cache_ttl tests: the lifetime goes in the parameter the model
+// takes, and one the model does not accept is dropped.
+func TestOpenAIResponsesPromptCacheTTL(t *testing.T) {
+	t.Parallel()
+
+	body, _, err := executeResponses(t, ExecutionOptions{Model: "gpt-5.6", PromptCacheKey: "k", ModelOptions: map[string]any{"cache_ttl": "12h"}}, okResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := marshalNoEscape(body["prompt_cache_options"]); got != `{"ttl":"12h"}` || body["prompt_cache_retention"] != nil {
+		t.Fatalf("gpt-5.6 body = %#v", body)
+	}
+	body, _, err = executeResponses(t, ExecutionOptions{Model: "gpt-4.1-2025-04-14", ModelOptions: map[string]any{"cache_ttl": "24h"}}, okResponse)
+	if err != nil || body["prompt_cache_retention"] != "24h" || body["prompt_cache_options"] != nil {
+		t.Fatalf("gpt-4.1: %v, %#v", err, body)
+	}
+	for model, ttl := range map[string]string{"gpt-5.6": "24h", "gpt-4.1": "12h", "gpt-4o": "24h"} {
+		body, _, err = executeResponses(t, ExecutionOptions{Model: model, ModelOptions: map[string]any{"cache_ttl": ttl}}, okResponse)
+		if err != nil || body["prompt_cache_retention"] != nil || body["prompt_cache_options"] != nil {
+			t.Errorf("%s %s: %v, %#v", model, ttl, err, body)
+		}
+	}
+	if got := openAIPromptCacheTTLs("gpt-5.6", ProviderOpenAICompatible); got != nil {
+		t.Fatalf("compatible lifetimes = %v", got)
+	}
+}
+
 func TestOpenAIResponsesUsageReadsCacheWrites(t *testing.T) {
 	t.Parallel()
 

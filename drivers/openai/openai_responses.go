@@ -318,6 +318,7 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 			payload["prompt_cache_options"] = cacheOptions
 		}
 	}
+	applyOpenAIPromptCacheTTL(payload, options.Model, d.Provider(), optionString(options.ModelOptions, "cache_ttl"))
 	if v := optionInt(options.ModelOptions, "max_tokens"); v != nil {
 		payload["max_output_tokens"] = *v
 	}
