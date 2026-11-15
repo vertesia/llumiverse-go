@@ -467,6 +467,14 @@ func TestBedrockToolResultFiles(t *testing.T) {
 		},
 	}}, ExecutionOptions{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		// The tool result answers a toolUse from the stored conversation; an
+		// unanswered result would be dropped as an orphan.
+		Conversation: bedrockPrompt{Messages: []brtypes.Message{
+			{Role: brtypes.ConversationRoleUser, Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: "look it up"}}},
+			{Role: brtypes.ConversationRoleAssistant, Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberToolUse{Value: brtypes.ToolUseBlock{
+				ToolUseId: aws.String("tool_1"), Name: aws.String("lookup"), Input: brdoc.NewLazyDocument(map[string]any{}),
+			}}}},
+		}},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
 			Description: ptr("Lookup"),
@@ -479,9 +487,10 @@ func TestBedrockToolResultFiles(t *testing.T) {
 	if runtime.got == nil || len(runtime.got.Messages) == 0 {
 		t.Fatalf("messages = %#v", runtime.got)
 	}
-	result, ok := runtime.got.Messages[0].Content[0].(*brtypes.ContentBlockMemberToolResult)
+	last := runtime.got.Messages[len(runtime.got.Messages)-1]
+	result, ok := last.Content[0].(*brtypes.ContentBlockMemberToolResult)
 	if !ok {
-		t.Fatalf("content = %#v", runtime.got.Messages[0].Content)
+		t.Fatalf("content = %#v", last.Content)
 	}
 	var sawText, sawJSON, sawImage, sawDocument, sawVideo bool
 	for _, block := range result.Value.Content {

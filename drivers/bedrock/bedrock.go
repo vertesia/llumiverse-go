@@ -824,7 +824,10 @@ func bedrockConversationInput(conversation any, prompt bedrockPrompt) bedrockPro
 	if len(prompt.System) > 0 {
 		out.System = prompt.System
 	}
-	out.Messages = fixBedrockOrphanedToolUse(mergeBedrockMessages(append(out.Messages, prompt.Messages...)))
+	// Repair both orphan directions: an unanswered toolUse gets a synthetic
+	// result, and a toolResult whose toolUse is gone is dropped. Dropping a whole
+	// message can leave two same-role messages adjacent, so merge again.
+	out.Messages = mergeBedrockMessages(fixBedrockOrphanedToolResults(fixBedrockOrphanedToolUse(mergeBedrockMessages(append(out.Messages, prompt.Messages...)))))
 	return out
 }
 
