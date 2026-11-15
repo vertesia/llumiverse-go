@@ -71,13 +71,24 @@ func (s *channelStream) Recv() (CompletionChunk, error) {
 }
 
 // Close finalizes the completion and releases the underlying provider stream.
-// It is safe to call more than once.
+// It is safe to call more than once, and while the stream is still in flight:
+// the chunks nobody will read are drained so the driver goroutine producing
+// them is never left blocked on a send.
 func (s *channelStream) Close() error {
 	var err error
 	s.once.Do(func() {
 		s.finalizeCompletion()
 		if s.closeFn != nil {
 			err = s.closeFn()
+		}
+		if s.ch != nil {
+			// Closing the provider stream makes the producer fail and close the
+			// channel; until then, discard what it still sends.
+			go func() {
+				for item := range s.ch {
+					_ = item
+				}
+			}()
 		}
 	})
 	return err

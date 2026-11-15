@@ -130,8 +130,10 @@ type HTTPTimeoutOptions struct {
 type DriverOptions struct {
 	// HTTPTimeout supplies constructor-level transport timeout defaults.
 	HTTPTimeout HTTPTimeoutOptions
-	// StreamStartTimeout bounds how long a stream may wait for its first chunk
-	// before it is cancelled. Zero leaves it to the transport timeouts.
+	// StreamStartTimeout bounds how long a stream returned by Stream may stay
+	// unconsumed (no Recv call) before it is closed and its provider connection
+	// released; see core.LeaseCompletionStream. It is a safety net for callers
+	// that never read or close a stream, not a request timeout. Zero disables it.
 	StreamStartTimeout time.Duration
 }
 
