@@ -1724,7 +1724,9 @@ func (d *BedrockDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) (
 	}
 	if custom, err := d.models.ListCustomModels(ctx, &bedrock.ListCustomModelsInput{}); err == nil {
 		for _, summary := range custom.ModelSummaries {
-			models = append(models, bedrockCustomAIModel(summary))
+			if model, ok := bedrockCustomAIModel(summary); ok {
+				models = append(models, model)
+			}
 		}
 	}
 	if profiles, err := d.models.ListInferenceProfiles(ctx, &bedrock.ListInferenceProfilesInput{}); err == nil {
@@ -1803,13 +1805,21 @@ func bedrockFoundationModelName(summary bedrocktypes.FoundationModelSummary) str
 	return aws.ToString(summary.ModelId)
 }
 
-// bedrockCustomAIModel maps a custom model summary to an AIModel, inferring
-// modalities and tool support from the model ID.
-func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) AIModel {
+// bedrockCustomAIModel maps a custom model summary to an AIModel. A custom
+// model's ARN carries a caller-chosen name, so its modalities and tool support
+// come from the base model it reports; custom embedding models are left out.
+func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) (AIModel, bool) {
 	id := aws.ToString(summary.ModelArn)
 	name := aws.ToString(summary.ModelName)
 	if name == "" {
 		name = id
+	}
+	capabilityID := aws.ToString(summary.BaseModelName)
+	if capabilityID == "" {
+		capabilityID = id
+	}
+	if bedrockIsEmbeddingModel(capabilityID) {
+		return AIModel{}, false
 	}
 	return AIModel{
 		ID:               id,
@@ -1819,10 +1829,16 @@ func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) AIModel {
 		Description:      ptr("Custom model from " + aws.ToString(summary.BaseModelName)),
 		Type:             ptr(ModelType("text")),
 		IsCustom:         ptr(true),
-		InputModalities:  ptr(bedrockCapabilitiesInput(id)),
-		OutputModalities: ptr(bedrockCapabilitiesOutput(id)),
-		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
-	}
+		InputModalities:  ptr(bedrockCapabilitiesInput(capabilityID)),
+		OutputModalities: ptr(bedrockCapabilitiesOutput(capabilityID)),
+		ToolSupport:      ptr(bedrockLikelySupportsTools(capabilityID)),
+	}, true
+}
+
+// bedrockIsEmbeddingModel reports whether a model ID names an embedding model.
+func bedrockIsEmbeddingModel(model string) bool {
+	model = strings.ToLower(model)
+	return strings.Contains(model, "embed") || strings.Contains(model, "marengo")
 }
 
 // bedrockInferenceProfileAIModel maps an inference profile to an AIModel,
@@ -1836,7 +1852,7 @@ func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary
 		return AIModel{}, false
 	}
 	provider := bedrockProviderFromProfile(summary)
-	if provider == "" || !bedrockPublisherSupported(provider) {
+	if provider == "" || !bedrockPublisherSupported(provider) || bedrockIsEmbeddingModel(id) {
 		return AIModel{}, false
 	}
 	name := aws.ToString(summary.InferenceProfileName)
@@ -1937,6 +1953,8 @@ func bedrockModalities(modalities []bedrocktypes.ModelModality) []string {
 			out = append(out, "image")
 		case bedrocktypes.ModelModalityEmbedding:
 			out = append(out, "embedding")
+		case "SPEECH":
+			out = append(out, "audio")
 		default:
 			out = append(out, strings.ToLower(string(modality)))
 		}
