@@ -1585,7 +1585,7 @@ func documentToAny(doc brdoc.Interface) any {
 
 // bedrockUsage maps Converse token usage into ExecutionTokenUsage, folding cache
 // read/write tokens into the total prompt count while also exposing them
-// separately.
+// separately, along with the one-hour share of the cache writes.
 func bedrockUsage(usage *brtypes.TokenUsage) *ExecutionTokenUsage {
 	if usage == nil {
 		return nil
@@ -1595,7 +1595,7 @@ func bedrockUsage(usage *brtypes.TokenUsage) *ExecutionTokenUsage {
 	total := int32Value(usage.TotalTokens)
 	cacheRead := int32Value(usage.CacheReadInputTokens)
 	cacheWrite := int32Value(usage.CacheWriteInputTokens)
-	return &ExecutionTokenUsage{
+	out := &ExecutionTokenUsage{
 		Prompt:           tokens(prompt + cacheRead + cacheWrite),
 		PromptNew:        tokens(prompt),
 		Result:           tokens(result),
@@ -1603,6 +1603,18 @@ func bedrockUsage(usage *brtypes.TokenUsage) *ExecutionTokenUsage {
 		PromptCached:     tokens(cacheRead),
 		PromptCacheWrite: tokens(cacheWrite),
 	}
+	// Cache details split the writes by lifetime; those not written for one
+	// hour used the five-minute default.
+	oneHour := 0
+	for _, detail := range usage.CacheDetails {
+		if detail.Ttl == brtypes.CacheTTLOneHour {
+			oneHour += int32Value(detail.InputTokens)
+		}
+	}
+	if oneHour > 0 {
+		out.PromptCacheWrite1H = tokens(oneHour)
+	}
+	return out
 }
 
 func int32Value(v *int32) int {
