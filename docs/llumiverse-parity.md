@@ -200,59 +200,59 @@ A commit that spans several areas appears in each area's table with that area's 
 
 | Commit | Date | Subject | Decision | Reason |
 | --- | --- | --- | --- | --- |
-| `b413edb` | 2026-05-28 | fix: vertexai URL retry - cherry pick 2a6af93384f8bb3f5f572c951b47f51a355cade2 (#424) | port |  |
-| `e1beebb` | 2026-06-03 | feat: Support GS URIs for Gemini (#436) | port |  |
-| `d74f811` | 2026-06-03 | feat: Debug prompt, binary truncation (#438) | port | core hook ported in the foundation commit; drivers implement FormatDebugPrompt. |
-| `21be90e` | 2026-06-10 | fix: invalid_grant is non-retryable (#459) | port |  |
-| `0349028` | 2026-06-10 | feat: remove restrictedTypes for file handling for Claude tool results, and log video attachment. (#457) | port |  |
-| `e53b936` | 2026-06-11 | fix: retry transport aborts and deadline-exceeded errors (#458) | port |  |
-| `6c39d20` | 2026-06-14 | fix(drivers): drop orphaned tool_result blocks before sending (Claude, Bedrock, OpenAI, Gemini) (#463) | port |  |
-| `ebbe339` | 2026-06-14 | fix(gemini): keep split parallel tool responses (#464) | port |  |
-| `b1c7c28` | 2026-06-15 | fix(vertexai): retry Gemini 499 cancellations (#467) | port |  |
-| `420fd65` | 2026-06-23 | fix: filter embedding models from global model in vertexai listing (#485) | port |  |
-| `8207b0f` | 2026-07-09 | fix(vertexai): retry Gemini URL-fetcher throttle 400s (#520) | port |  |
-| `2a38024` | 2026-07-14 | feat: improve implicit prompt caching (#531) | port |  |
-| `94adce2` | 2026-07-17 | [Backport main] fix: improve Claude reasoning and truncation reliability (#542) | port |  |
-| `7b6f5b0` | 2026-07-20 | [Backport main] fix: extend default Gemini request timeout (#545) | port |  |
-| `c71fb9b` | 2026-08-06 | feat: preserve native thinking output across providers (#532) | port |  |
-| `105b57f` | 2026-08-12 | fix: harden model catalog resolution (#579) | port | Catalogue/option metadata parts skip (no Go counterpart); review driver routing. |
-| `d7c3752` | 2026-08-12 | feat: support provider service tiers (#583) | port |  |
-| `a7c34be` | 2026-08-18 | fix: carry tool-result attachments to OpenAI Responses and Gemini (#593) | port |  |
-| `b47bee1` | 2026-08-19 | fix(openai): handle schemas outside strict subset (#599) | port |  |
-| `ddb1416` | 2026-08-20 | feat(vertexai): add Gemini Omni video generation (#600) | port |  |
-| `2b3748e` | 2026-08-21 | feat(vertexai): cache the Gemini prompt prefix with Vertex cachedContents (#604) | port |  |
-| `ce4eb06` | 2026-08-21 | fix: classify Gemini finish reason errors (#605) | port |  |
-| `307cb5e` | 2026-08-24 | fix: keep Claude agent prompt prefixes byte-stable across turns (#606) | port |  |
-| `4627464` | 2026-08-25 | feat: capture provider service tiers (#607) | port |  |
-| `ce176ba` | 2026-08-26 | fix: coordinate Gemini context caches (#615) | port |  |
-| `03c62c7` | 2026-08-27 | fix(vertexai): recombine split parallel tool results into one Gemini turn (#620) | port |  |
-| `98f5eee` | 2026-09-01 | feat: named tool choice across drivers with typed contract failures (#629) | port |  |
-| `0f1bf9d` | 2026-09-04 | [Backport main] feat(vertexai): support Gemini Omni Flash 1.1 (#640) | port |  |
-| `2e6580b` | 2026-09-07 | [Backport main] fix: honor Gemini HTTP transport timeouts (#643) | port |  |
-| `de5d7f1` | 2026-09-16 | fix(vertexai): keep parallel Gemini calls to one tool distinct when streaming (#663) | port |  |
-| `311c5b9` | 2026-09-18 | [Backport main] feat: add embedding batch provider adapter with Vertex support (#671) | port |  |
-| `b5b6581` | 2026-09-18 | [Backport main] fix: align model option schemas, metadata and routing (#674) | port | Option schema parts covered by wire types. |
-| `c1df2ee` | 2026-09-22 | feat: add bounded file audio across primary providers (#672) | port |  |
-| `1d8ded7` | 2026-09-23 | [Backport main] fix: remove cross-model temperature defaults (#687) | port | Option metadata defaults; check no driver sends a default temperature. |
-| `e81a976` | 2026-09-25 | fix(vertexai): normalize Gemini audio finish reasons (#691) | port |  |
-| `cf780e4` | 2026-09-28 | feat: report one-hour cache writes and provider-reported cost in token usage (#697) | port |  |
-| `a3ac772` | 2026-09-30 | fix: clarify Vertex AI storage permission denials (#709) | port |  |
-| `f157a07` | 2026-10-05 | fix: preserve generated-image metadata and reject empty output (#735) | port |  |
-| `98f733a` | 2026-10-07 | [Backport main] fix(vertexai): support Nano Banana IDs and exclude Live models (#745) | port |  |
-| `124d400` | 2026-10-08 | fix: cap inline Gemini media at 100 MB and quiet AJV unknown formats (#750) | port | AJV unknown-format part skip (no Go validation). |
-| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | port |  |
-| `e449750` | 2026-10-13 | [Backport main] fix: cap total inline Gemini media per request, log result validation failures at info (#769) | port |  |
-| `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | port |  |
-| `71d2a55` | 2026-10-15 | [Backport main] fix: model maintenance for Gemini 4, Claude 5.5, DeepSeek V4.1 Flash, GLM 5.3 and Bedrock listings (#787) | port |  |
-| `2c7fc5f` | 2026-10-15 | [Backport main] fix: MiniMax structured output and Gemini explicit-cache bugs (#790) | port |  |
-| `5c06658` | 2026-10-16 | feat: Gemini 4 Argon long decode on Vertex (#788) | port |  |
-| `74be150` | 2026-10-19 | [Backport main] fix(vertexai): give every Gemini tool call a unique id (#802) | port |  |
-| `70c413c` | 2026-10-22 | fix(drivers): refuse a non-array conversation in OpenAI and Gemini as a 400 (#810) | port |  |
-| `3e94ace` | 2026-10-26 | fix: classify errors raised while building a prompt (#822) | port |  |
-| `eefdaed` | 2026-10-28 | fix(vertexai): retry URL fetcher overload and timeout rejections (#832) | port |  |
-| `151a031` | 2026-10-29 | fix(vertexai): report Gemini inline media over its size limit as a 413 (#838) | port |  |
-| `27b5529` | 2026-11-13 | feat: @google/genai 3.3, Gemini 4 Hydrogen XHIGH and Gemini Omni 1.2 Flash (#894) | port |  |
-| `b3cdb45` | 2026-11-13 | feat(openai): update openai to 7.56.0 and map new usage, tool usage and residency (#893) | port |  |
+| `b413edb` | 2026-05-28 | fix: vertexai URL retry - cherry pick 2a6af93384f8bb3f5f572c951b47f51a355cade2 (#424) | ported | Gemini URL-fetcher 400s are retryable (TestGeminiErrorClassification). |
+| `e1beebb` | 2026-06-03 | feat: Support GS URIs for Gemini (#436) | covered | Cloud Storage files on a user turn are sent as fileData without being read (TestGeminiUserPromptPassesGCSByURI). |
+| `d74f811` | 2026-06-03 | feat: Debug prompt, binary truncation (#438) | ported | FormatDebugPrompt truncates inline media of Gemini, Imagen, Claude and open MaaS prompts and leaves the sent prompt intact (TestVertexGeminiDebugPromptTruncatesInlineMedia, TestVertexImagenDebugPromptTruncatesReferenceImages, TestVertexDebugPromptOtherProtocols). |
+| `21be90e` | 2026-06-10 | fix: invalid_grant is non-retryable (#459) | ported | invalid_grant token failures are not retryable (TestGeminiInvalidGrantTokenErrorIsNotRetryable). |
+| `0349028` | 2026-06-10 | feat: remove restrictedTypes for file handling for Claude tool results, and log video attachment. (#457) | skip | Claude tool-result file types belong to the Claude area; the Gemini part only logs video attachments, and the library has no logger. |
+| `e53b936` | 2026-06-11 | fix: retry transport aborts and deadline-exceeded errors (#458) | ported | Transport aborts and deadline-exceeded errors are retryable (TestGeminiErrorClassificationWithoutStatus). |
+| `6c39d20` | 2026-06-14 | fix(drivers): drop orphaned tool_result blocks before sending (Claude, Bedrock, OpenAI, Gemini) (#463) | ported | Function responses whose call is gone are dropped before the request (TestFixOrphanedGeminiToolResults, TestGeminiOrphanedToolResultDroppedFromPayload). |
+| `ebbe339` | 2026-06-14 | fix(gemini): keep split parallel tool responses (#464) | ported | Split parallel tool responses are kept and recombined (TestGeminiRequestContentsRecombinesAndStripsGeneratedIDs). |
+| `b1c7c28` | 2026-06-15 | fix(vertexai): retry Gemini 499 cancellations (#467) | ported | Gemini 499 cancellations are retryable (TestGeminiErrorClassification); prompt errors are classified before core wraps them (TestVertexStreamLeaseReleasesUnreadStream covers the stream lease added with it). |
+| `420fd65` | 2026-06-23 | fix: filter embedding models from global model in vertexai listing (#485) | ported | Embedding models are not listed with the chat models (TestVertexListingFiltersSpecialPurposeModels). |
+| `8207b0f` | 2026-07-09 | fix(vertexai): retry Gemini URL-fetcher throttle 400s (#520) | ported | URL-fetcher throttle 400s are retryable (TestGeminiErrorClassification). |
+| `2a38024` | 2026-07-14 | feat: improve implicit prompt caching (#531) | covered | geminiPayload does not depend on PromptCacheKey, and cachedContentTokenCount is reported as prompt_cached (TestGeminiContextCacheStreamingAndUsage, TestGeminiContextCacheOptOut). |
+| `94adce2` | 2026-07-17 | [Backport main] fix: improve Claude reasoning and truncation reliability (#542) | ported | Gemini truncation reports length and terminal finish reasons are classified (TestGeminiFinishReasonErrors, TestGeminiThinkingConfig). |
+| `7b6f5b0` | 2026-07-20 | [Backport main] fix: extend default Gemini request timeout (#545) | covered | Go applies no built-in request timeout to extend; callers set HTTPTimeout per driver or call (TestVertexHTTPTimeoutConfiguration). |
+| `c71fb9b` | 2026-08-06 | feat: preserve native thinking output across providers (#532) | ported | Gemini thoughts come back as thoughts results with include_thoughts, and signed parts reach the conversation byte for byte, streamed or not (TestGeminiPreservesSignedParts, TestGeminiStreamKeepsSignedParts, TestGeminiPruningKeepsSignedThoughts). |
+| `105b57f` | 2026-08-12 | fix: harden model catalog resolution (#579) | skip | Catalogue and option metadata have no Go counterpart; Vertex request routing is by model family and version (TestGeminiRegionResolution, TestGeminiEndpointRouting). |
+| `d7c3752` | 2026-08-12 | feat: support provider service tiers (#583) | ported | service_tier and flex map to the Vertex shared-request headers (TestGeminiServiceTier, TestGeminiServiceTierHeadersAndResolvedTier). |
+| `a7c34be` | 2026-08-18 | fix: carry tool-result attachments to OpenAI Responses and Gemini (#593) | ported | Tool-result files are sent as functionResponse parts (TestGeminiToolResultAttachments). |
+| `b47bee1` | 2026-08-19 | fix(openai): handle schemas outside strict subset (#599) | skip | Strict-schema handling is in the shared Chat Completions protocol (OpenAI area), which open MaaS models on Vertex use. |
+| `ddb1416` | 2026-08-20 | feat(vertexai): add Gemini Omni video generation (#600) | ported | Gemini Omni video models run through the interactions API with GCS media and output (TestOmniVideoRouting, TestOmniVideoTextToVideo, TestOmniVideoMediaRequests, TestOmniVideoOutput). |
+| `2b3748e` | 2026-08-21 | feat(vertexai): cache the Gemini prompt prefix with Vertex cachedContents (#604) | ported | PromptCacheKey routes the stable prompt prefix through a cachedContents resource, with memo, recovery by display name, refresh, recreation and fallback (TestGeminiCachePrefixDerivation, TestGeminiContextCacheSendsDynamicTurn, TestGeminiContextCacheReuse, TestGeminiContextCacheAdoptsPeer, TestGeminiContextCacheUnusableResource, TestGeminiContextCacheOptOut). |
+| `ce4eb06` | 2026-08-21 | fix: classify Gemini finish reason errors (#605) | ported | Terminal finish reasons fail with the TS messages and retryability (TestGeminiFinishReasonErrors). |
+| `307cb5e` | 2026-08-24 | fix: keep Claude agent prompt prefixes byte-stable across turns (#606) | skip | The Vertex part keeps Claude histories byte-stable; it belongs to the Claude area. |
+| `4627464` | 2026-08-25 | feat: capture provider service tiers (#607) | ported | The resolved service tier is reported on completions and chunks (TestGeminiServiceTierHeadersAndResolvedTier). |
+| `ce176ba` | 2026-08-26 | fix: coordinate Gemini context caches (#615) | ported | Local singleflight, the create permit, the 429 cooldown and the TTL refresh are ported (TestGeminiContextCacheReuse, TestGeminiContextCacheCreateFailures). The host-supplied distributed coordinator is not: Go has no coordination interface for it, and recovery by listing covers several processes. |
+| `03c62c7` | 2026-08-27 | fix(vertexai): recombine split parallel tool results into one Gemini turn (#620) | ported | Split parallel tool results are recombined into one user turn (TestGeminiRequestContentsRecombinesAndStripsGeneratedIDs). |
+| `98f5eee` | 2026-09-01 | feat: named tool choice across drivers with typed contract failures (#629) | ported | tool_choice and required_tool_name map to functionCallingConfig, and a required choice without tools is a typed 400 (TestGeminiNamedToolChoice). |
+| `0f1bf9d` | 2026-09-04 | [Backport main] feat(vertexai): support Gemini Omni Flash 1.1 (#640) | ported | Gemini Omni Flash 1.1 is routed and listed by version (TestOmniVideoRouting). |
+| `2e6580b` | 2026-09-07 | [Backport main] fix: honor Gemini HTTP transport timeouts (#643) | covered | HTTPTimeout options apply to every Gemini request, streams included (TestVertexHTTPTimeoutConfiguration). |
+| `de5d7f1` | 2026-09-16 | fix(vertexai): keep parallel Gemini calls to one tool distinct when streaming (#663) | ported | Parallel streamed calls to one tool keep distinct ids (TestGeminiParallelCallsToOneToolStayDistinct). |
+| `311c5b9` | 2026-09-18 | [Backport main] feat: add embedding batch provider adapter with Vertex support (#671) | ported | The driver implements core.EmbeddingBatchAdapter over batchPredictionJobs (TestVertexEmbeddingBatchCapability, TestVertexEmbeddingBatchRows, TestVertexEmbeddingBatchResults, TestVertexEmbeddingBatchLifecycle, TestVertexEmbeddingBatchOutputArtifacts). |
+| `b5b6581` | 2026-09-18 | [Backport main] fix: align model option schemas, metadata and routing (#674) | ported | Imagen options, references and routing follow the TS client (TestImagenOptionSerialization, TestImagenPersonGeneration); option schemas are covered by the wire types. |
+| `c1df2ee` | 2026-09-22 | feat: add bounded file audio across primary providers (#672) | ported | Speech and transcription models return file audio through StoreAudio and transcripts with metadata; inline audio never stays in history (TestGeminiSpeechStoresPCM, TestGeminiTranscriptionFileData, TestGeminiFileAudioRejectsInvalidInput, TestGeminiAudioStaysOutOfConversation, TestVertexListsFileAudioModels). |
+| `1d8ded7` | 2026-09-23 | [Backport main] fix: remove cross-model temperature defaults (#687) | covered | No sampling parameter is sent unless the caller sets it (TestGeminiSendsNoDefaultSampling). |
+| `e81a976` | 2026-09-25 | fix(vertexai): normalize Gemini audio finish reasons (#691) | ported | File audio finish reasons are normalized to stop and length (TestGeminiSpeechStoresPCM, TestGeminiTranscriptionFileData). |
+| `cf780e4` | 2026-09-28 | feat: report one-hour cache writes and provider-reported cost in token usage (#697) | ported | Generated-image tokens are reported as result_image (TestGeminiResultImageTokens). |
+| `a3ac772` | 2026-09-30 | fix: clarify Vertex AI storage permission denials (#709) | ported | Cloud Storage permission denials carry the bucket hint (TestVertexStorageDenialAddsBucketHint). |
+| `f157a07` | 2026-10-05 | fix: preserve generated-image metadata and reject empty output (#735) | ported | Imagen results keep the returned MIME type and empty output is an error (TestImagenOutputMetadata). |
+| `98f733a` | 2026-10-07 | [Backport main] fix(vertexai): support Nano Banana IDs and exclude Live models (#745) | ported | Nano Banana is routed to global and Live models are not listed (TestGeminiEndpointRouting, TestVertexListingFiltersSpecialPurposeModels). |
+| `124d400` | 2026-10-08 | fix: cap inline Gemini media at 100 MB and quiet AJV unknown formats (#750) | ported | Inline media is capped at 100 MB per file as a 413 (TestGeminiInlineMediaPerFileLimit); the AJV part has no Go counterpart. |
+| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | ported | Imagen option names and output options follow the TS client (TestImagenOptionSerialization). |
+| `e449750` | 2026-10-13 | [Backport main] fix: cap total inline Gemini media per request, log result validation failures at info (#769) | ported | Inline media is capped at 150 MB per request, history included (TestGeminiInlineMediaPerRequestLimit); the logging part has no Go counterpart. |
+| `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | skip | Logging only; the library has no logger, and refusals already surface as classified finish-reason errors. |
+| `71d2a55` | 2026-10-15 | [Backport main] fix: model maintenance for Gemini 4, Claude 5.5, DeepSeek V4.1 Flash, GLM 5.3 and Bedrock listings (#787) | ported | Gemini 4 thinking levels and routing (TestGeminiThinkingConfig, TestGeminiRegionResolution); other providers' parts are in their areas. |
+| `2c7fc5f` | 2026-10-15 | [Backport main] fix: MiniMax structured output and Gemini explicit-cache bugs (#790) | ported | A model without explicit caching is skipped for an hour and a system-only prefix creates no empty contents (TestGeminiContextCacheCreateFailures, TestGeminiContextCacheSendsDynamicTurn). |
+| `5c06658` | 2026-10-16 | feat: Gemini 4 Argon long decode on Vertex (#788) | ported | Long decodes continue across requests with the continuation token, usage summed (TestGeminiLongDecodeContinues, TestGeminiLongDecodeWithoutTokenReturnsLength); the timeout bump is moot without a built-in timeout. |
+| `74be150` | 2026-10-19 | [Backport main] fix(vertexai): give every Gemini tool call a unique id (#802) | ported | Every Gemini tool call gets a unique id (TestAssignGeminiFunctionCallIDs, TestGeminiNonStreamedParallelCallsGetOwnIDs). |
+| `70c413c` | 2026-10-22 | fix(drivers): refuse a non-array conversation in OpenAI and Gemini as a 400 (#810) | ported | A conversation that is not a Gemini message array is a 400 (TestGeminiRefusesNonArrayConversation). |
+| `3e94ace` | 2026-10-26 | fix: classify errors raised while building a prompt (#822) | ported | Errors raised while building a prompt go through the Gemini or Omni formatter (TestGeminiInlineMediaPerFileLimit, TestOmniVideoRejectsInvalidRequests). |
+| `eefdaed` | 2026-10-28 | fix(vertexai): retry URL fetcher overload and timeout rejections (#832) | ported | URL-fetcher overload and timeout 400s are retryable (TestGeminiErrorClassification). |
+| `151a031` | 2026-10-29 | fix(vertexai): report Gemini inline media over its size limit as a 413 (#838) | ported | Inline media over its limit is a non-retryable 413 (TestGeminiInlineMediaPerFileLimit, TestGeminiInlineAudioLimit). |
+| `27b5529` | 2026-11-13 | feat: @google/genai 3.3, Gemini 4 Hydrogen XHIGH and Gemini Omni 1.2 Flash (#894) | ported | XHIGH thinking, Omni 1.2 Flash and the v1beta1 continuation protocol (TestGeminiThinkingConfig, TestOmniVideoRouting, TestGeminiLongDecodeContinues). |
+| `b3cdb45` | 2026-11-13 | feat(openai): update openai to 7.56.0 and map new usage, tool usage and residency (#893) | skip | The Vertex part only retypes a TS test. |
 
 ## Azure (Microsoft Foundry, Azure OpenAI)
 

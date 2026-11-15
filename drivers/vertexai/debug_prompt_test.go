@@ -96,7 +96,7 @@ func TestVertexImagenDebugPromptTruncatesReferenceImages(t *testing.T) {
 	}
 }
 
-func TestVertexDebugPromptLeavesOtherPromptsUnchanged(t *testing.T) {
+func TestVertexDebugPromptOtherProtocols(t *testing.T) {
 	t.Parallel()
 
 	driver := &VertexAIDriver{}
