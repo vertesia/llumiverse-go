@@ -3,6 +3,7 @@ package vertexai
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"strings"
 )
 
@@ -240,4 +241,41 @@ func geminiRequestContents(contents []geminiContent, hasTools bool) []geminiCont
 		out = convertGeminiFunctionPartsToText(out)
 	}
 	return stripGeneratedGeminiCallIDs(fixOrphanedGeminiToolResults(out))
+}
+
+// geminiFunctionCallingConfig maps the tool_choice and required_tool_name model
+// options to Gemini's functionCallingConfig: "none" is NONE, "required" and "any"
+// are ANY, anything else is AUTO, and a required tool name restricts the allowed
+// functions to that one.
+func geminiFunctionCallingConfig(modelOptions map[string]any) map[string]any {
+	mode := "AUTO"
+	switch optionString(modelOptions, "tool_choice") {
+	case "none":
+		mode = "NONE"
+	case "required", "any":
+		mode = "ANY"
+	}
+	config := map[string]any{"mode": mode}
+	if name := optionString(modelOptions, "required_tool_name"); name != "" {
+		config["allowedFunctionNames"] = []string{name}
+	}
+	return config
+}
+
+// validateGeminiRequest refuses, as non-retryable 400s, a request the driver cannot
+// send as asked: a conversation that is not a Gemini message array, or a required
+// tool choice without any tool to call.
+func validateGeminiRequest(options ExecutionOptions, operation string) error {
+	context := LlumiverseErrorContext{Provider: ProviderVertexAI, Model: options.Model, Operation: operation}
+	if _, ok := geminiStoredConversation(options.Conversation); !ok {
+		message := "[vertexai] The conversation must be an array of messages"
+		return newLlumiverseError(message, ptr(false), context, errors.New(message), 400, "InvalidConversationError")
+	}
+	_, hasRequiredName := options.ModelOptions["required_tool_name"]
+	choice := optionString(options.ModelOptions, "tool_choice")
+	if (hasRequiredName || choice == "required" || choice == "any") && len(options.Tools) == 0 {
+		message := "[Vertex AI Gemini] A required tool choice was requested, but no tools are available."
+		return newLlumiverseError(message, ptr(false), context, errors.New(message), 400, "ToolChoiceConfigurationError")
+	}
+	return nil
 }

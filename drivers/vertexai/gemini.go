@@ -12,6 +12,9 @@ import (
 // requestGemini POSTs a generateContent request and converts the response into a
 // Completion plus the updated conversation.
 func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt, options ExecutionOptions) (*Completion, error) {
+	if err := validateGeminiRequest(options, "execute"); err != nil {
+		return nil, err
+	}
 	prompt = geminiConversationInput(options.Conversation, prompt)
 	endpoint, err := d.vertexEndpoint(options.Model, "generateContent")
 	if err != nil {
@@ -36,6 +39,9 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 // requestGeminiStream opens a streamGenerateContent SSE stream, decodes each
 // chunk, and rebuilds the conversation once the stream is consumed.
 func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiPrompt, options ExecutionOptions) (CompletionStream, error) {
+	if err := validateGeminiRequest(options, "stream"); err != nil {
+		return nil, err
+	}
 	endpoint, err := d.vertexEndpoint(options.Model, "streamGenerateContent")
 	if err != nil {
 		return nil, err

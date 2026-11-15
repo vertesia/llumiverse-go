@@ -555,7 +555,7 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 			"functionDeclarations": geminiTools(options.Tools),
 		}}
 		payload["toolConfig"] = map[string]any{
-			"functionCallingConfig": map[string]any{"mode": "AUTO"},
+			"functionCallingConfig": geminiFunctionCallingConfig(options.ModelOptions),
 		}
 	}
 	return payload
