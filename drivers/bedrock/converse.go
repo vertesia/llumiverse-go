@@ -1,6 +1,9 @@
 package bedrock
 
 import (
+	"encoding/json"
+	"strings"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 )
@@ -43,6 +46,51 @@ func fixBedrockOrphanedToolResults(messages []brtypes.Message) []brtypes.Message
 		out = append(out, message)
 	}
 	return out
+}
+
+// bedrockSupportsConverseOutputConfig reports whether a Converse model family
+// accepts native structured output (outputConfig.textFormat json_schema). The
+// families listed reject it and keep the schema in the prompt; a new family
+// inherits native structured output, as in the TS client.
+func bedrockSupportsConverseOutputConfig(model string) bool {
+	normalized := strings.ToLower(model)
+	for _, family := range []string{
+		"claude", "ai21.", "amazon.nova", "cohere.", "meta.llama", "deepseek.r1", "writer.palmyra-x",
+		// Older Mistral generations; newer ones support outputConfig.
+		"mistral.mistral-7b-", "mistral.mixtral-", "mistral.mistral-large-2402", "mistral.mistral-small-2402", "mistral.pixtral-large-2502",
+		"google.gemma-3-4b",
+	} {
+		if strings.Contains(normalized, family) {
+			return false
+		}
+	}
+	return true
+}
+
+// bedrockIncludeSchemaInPrompt reports whether the result schema is written into
+// the Converse prompt: for families without native structured output, and for
+// MiniMax M2.5, which also needs the prompt instruction to answer parseable JSON.
+func bedrockIncludeSchemaInPrompt(model string) bool {
+	return !bedrockSupportsConverseOutputConfig(model) || strings.Contains(strings.ToLower(model), "minimax.minimax-m2.5")
+}
+
+// bedrockOutputConfig returns the native structured-output config for a result
+// schema, or nil when the model family does not accept one.
+func bedrockOutputConfig(options ExecutionOptions) *brtypes.OutputConfig {
+	if options.ResultSchema == nil || !bedrockSupportsConverseOutputConfig(options.Model) {
+		return nil
+	}
+	schema, err := json.Marshal(options.ResultSchema)
+	if err != nil {
+		return nil
+	}
+	return &brtypes.OutputConfig{TextFormat: &brtypes.OutputFormat{
+		Type: brtypes.OutputFormatTypeJsonSchema,
+		Structure: &brtypes.OutputFormatStructureMemberJsonSchema{Value: brtypes.JsonSchemaDefinition{
+			Name:   aws.String("output"),
+			Schema: aws.String(string(schema)),
+		}},
+	}}
 }
 
 // bedrockHasToolResult reports whether content carries a toolResult block.

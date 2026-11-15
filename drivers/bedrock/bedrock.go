@@ -260,7 +260,9 @@ func (d *BedrockDriver) CreatePrompt(ctx context.Context, segments []PromptSegme
 			}
 		}
 	}
-	if options.ResultSchema != nil {
+	// Families with native structured output get it in the request instead (see
+	// bedrockOutputConfig); the others are guided by the prompt.
+	if options.ResultSchema != nil && bedrockIncludeSchemaInPrompt(options.Model) {
 		schema, _ := json.MarshalIndent(options.ResultSchema, "", "  ")
 		notice := "IMPORTANT: The answer must be a JSON object using the following JSON Schema:\n" + string(schema)
 		if len(options.Tools) > 0 {
@@ -771,6 +773,7 @@ func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOpt
 		System:          prompt.System,
 		InferenceConfig: bedrockInferenceConfig(options.ModelOptions),
 		RequestMetadata: options.Labels,
+		OutputConfig:    bedrockOutputConfig(options),
 	}
 	if len(options.Tools) > 0 {
 		input.ToolConfig = &brtypes.ToolConfiguration{Tools: bedrockTools(options.Tools)}
@@ -797,6 +800,7 @@ func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options Execut
 		ToolConfig:                   converse.ToolConfig,
 		AdditionalModelRequestFields: converse.AdditionalModelRequestFields,
 		RequestMetadata:              converse.RequestMetadata,
+		OutputConfig:                 converse.OutputConfig,
 	}
 }
 
@@ -1787,7 +1791,7 @@ func bedrockFoundationAIModel(summary bedrocktypes.FoundationModelSummary) AIMod
 	}
 	return AIModel{
 		ID:               id,
-		Name:             strings.TrimSpace(aws.ToString(summary.ProviderName) + " " + aws.ToString(summary.ModelName)),
+		Name:             bedrockFoundationModelName(summary),
 		Provider:         string(ProviderBedrock),
 		Owner:            ptr(aws.ToString(summary.ProviderName)),
 		Type:             ptr(ModelType("text")),
@@ -1796,6 +1800,15 @@ func bedrockFoundationAIModel(summary bedrocktypes.FoundationModelSummary) AIMod
 		OutputModalities: ptr(bedrockModalities(summary.OutputModalities)),
 		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
 	}
+}
+
+// bedrockFoundationModelName is the AWS model name, which already names the
+// publisher, falling back to the model ID.
+func bedrockFoundationModelName(summary bedrocktypes.FoundationModelSummary) string {
+	if name := aws.ToString(summary.ModelName); name != "" {
+		return name
+	}
+	return aws.ToString(summary.ModelId)
 }
 
 // bedrockCustomAIModel maps a custom model summary to an AIModel, inferring
@@ -1868,24 +1881,47 @@ func bedrockProviderFromProfile(summary bedrocktypes.InferenceProfileSummary) st
 // bedrockPublisherSupported reports whether a provider name contains a supported
 // publisher token.
 func bedrockPublisherSupported(provider string) bool {
-	normalized := strings.ToLower(provider)
+	return bedrockPublisherKey(provider) != ""
+}
+
+// bedrockPublisherKey returns the supported publisher token a provider name
+// contains, or "". Punctuation is ignored so display names such as "Z.AI"
+// match the "zai" token.
+func bedrockPublisherKey(provider string) string {
+	normalized := bedrockNormalizePublisher(provider)
 	for _, supported := range bedrockSupportedPublishers() {
 		if strings.Contains(normalized, supported) {
-			return true
+			return supported
 		}
 	}
-	return false
+	return ""
+}
+
+// bedrockNormalizePublisher lowercases a publisher name and drops everything
+// but letters and digits.
+func bedrockNormalizePublisher(provider string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(provider) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // bedrockSupportedPublishers lists the model publishers this driver exposes.
+// It is a publisher allow-list, as in the TS client: Bedrock publishers use
+// incompatible invocation schemas, so a publisher is added once its Converse
+// path is verified, and its future models are listed without further changes.
 func bedrockSupportedPublishers() []string {
-	return []string{"amazon", "anthropic", "cohere", "ai21", "mistral", "meta", "deepseek", "writer", "openai", "twelvelabs", "qwen"}
+	return []string{"amazon", "anthropic", "cohere", "ai21", "mistral", "meta", "deepseek", "writer", "openai", "twelvelabs", "qwen",
+		"google", "minimax", "moonshot", "moonshotai", "nvidia", "zai"}
 }
 
 // bedrockUnsupportedModels returns model-id substrings to exclude for a given
 // publisher (e.g. image/video/audio/rerank/embed variants not served here).
 func bedrockUnsupportedModels(provider string) []string {
-	normalized := strings.ToLower(provider)
+	normalized := bedrockNormalizePublisher(provider)
 	switch {
 	case strings.Contains(normalized, "amazon"):
 		return []string{"titan-image-generator", "nova-reel", "nova-sonic", "rerank"}

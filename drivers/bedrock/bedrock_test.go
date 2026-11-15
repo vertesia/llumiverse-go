@@ -279,6 +279,7 @@ func TestBedrockPromptFileAndConversationBranches(t *testing.T) {
 		{Role: PromptRoleNegative, Content: "ignored"},
 		{Role: PromptRoleMask, Content: "ignored"},
 	}, ExecutionOptions{
+		Model:        "amazon.nova-pro-v1:0",
 		ResultSchema: map[string]any{"type": "object"},
 		Tools:        []ToolDefinition{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
 	})
