@@ -54,7 +54,7 @@ func TestAnthropicExecuteFormatsMessages(t *testing.T) {
 		ModelOptions: map[string]any{"max_tokens": 256, "temperature": 0.1},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
-			Description: "Lookup",
+			Description: ptr("Lookup"),
 			InputSchema: map[string]any{"type": "object"},
 		}},
 	})
@@ -71,7 +71,7 @@ func TestAnthropicExecuteFormatsMessages(t *testing.T) {
 	if len(resp.ToolUse) != 1 || resp.ToolUse[0].ID != "toolu_1" {
 		t.Fatalf("tool use = %#v", resp.ToolUse)
 	}
-	if resp.TokenUsage == nil || resp.TokenUsage.Total != 11 {
+	if resp.TokenUsage == nil || resp.TokenUsage.Total == nil || *resp.TokenUsage.Total != 11 {
 		t.Fatalf("usage = %#v", resp.TokenUsage)
 	}
 }
@@ -159,10 +159,10 @@ func TestAnthropicExecuteSupportsConversationDocumentsThinkingAndCache(t *testin
 	if !sawDocument {
 		t.Fatalf("document block missing: %#v", content)
 	}
-	if !strings.Contains(resp.Result[0].Value.(string), "thinking text") || !strings.Contains(resp.Result[0].Value.(string), "final text") {
+	if !strings.Contains(resp.Result[0].String(), "thinking text") || !strings.Contains(resp.Result[0].String(), "final text") {
 		t.Fatalf("result = %#v", resp.Result)
 	}
-	if resp.TokenUsage == nil || resp.TokenUsage.Prompt != 12 || resp.TokenUsage.PromptCached != 2 || resp.TokenUsage.PromptCacheWrite != 3 {
+	if resp.TokenUsage == nil || resp.TokenUsage.Prompt == nil || *resp.TokenUsage.Prompt != 12 || resp.TokenUsage.PromptCached == nil || *resp.TokenUsage.PromptCached != 2 || resp.TokenUsage.PromptCacheWrite == nil || *resp.TokenUsage.PromptCacheWrite != 3 {
 		t.Fatalf("usage = %#v", resp.TokenUsage)
 	}
 	conversation, ok := resp.Conversation.(claudePrompt)
@@ -415,7 +415,7 @@ func TestAnthropicStreamParsesSSEAndFinalizesConversation(t *testing.T) {
 		ModelOptions: map[string]any{"include_thoughts": true},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
-			Description: "Lookup",
+			Description: ptr("Lookup"),
 			InputSchema: map[string]any{"type": "object"},
 		}},
 	})
@@ -435,17 +435,17 @@ func TestAnthropicStreamParsesSSEAndFinalizesConversation(t *testing.T) {
 	if got["stream"] != true {
 		t.Fatalf("payload = %#v", got)
 	}
-	if completion.TokenUsage == nil || completion.TokenUsage.Prompt != 3 || completion.TokenUsage.Result != 3 {
+	if completion.TokenUsage == nil || completion.TokenUsage.Prompt == nil || *completion.TokenUsage.Prompt != 3 || completion.TokenUsage.Result == nil || *completion.TokenUsage.Result != 3 {
 		t.Fatalf("usage = %#v", completion.TokenUsage)
 	}
-	if len(completion.Result) != 1 || !strings.Contains(completion.Result[0].Value.(string), "thinking") || !strings.Contains(completion.Result[0].Value.(string), "hello world") {
+	if len(completion.Result) != 1 || !strings.Contains(completion.Result[0].String(), "thinking") || !strings.Contains(completion.Result[0].String(), "hello world") {
 		t.Fatalf("result = %#v", completion.Result)
 	}
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ToolName != "lookup" {
 		t.Fatalf("tool use = %#v", completion.ToolUse)
 	}
-	input, ok := completion.ToolUse[0].ToolInput.(map[string]any)
-	if !ok || input["q"] != "tokyo" {
+	input := completion.ToolUse[0].ToolInput
+	if input == nil || (*input)["q"] != "tokyo" {
 		t.Fatalf("tool input = %#v", completion.ToolUse[0].ToolInput)
 	}
 	conversation, ok := completion.Conversation.(claudePrompt)
@@ -543,15 +543,15 @@ func TestClaudeExportedHelpersAndSSEBranches(t *testing.T) {
 	}
 
 	messageStart := SSEToChunk(rawEnvelope(`{"type":"message_start","message":{"usage":{"input_tokens":1}}}`), ExecutionOptions{})
-	if messageStart.TokenUsage == nil || messageStart.TokenUsage.Prompt != 1 {
+	if messageStart.TokenUsage == nil || messageStart.TokenUsage.Prompt == nil || *messageStart.TokenUsage.Prompt != 1 {
 		t.Fatalf("message_start = %#v", messageStart)
 	}
 	redactedStart := SSEToChunk(rawEnvelope(`{"type":"content_block_start","content_block":{"type":"redacted_thinking","data":"secret"}}`), ExecutionOptions{ModelOptions: map[string]any{"include_thoughts": true}})
-	if len(redactedStart.Result) != 1 || !strings.Contains(redactedStart.Result[0].Value.(string), "secret") {
+	if len(redactedStart.Result) != 1 || !strings.Contains(redactedStart.Result[0].String(), "secret") {
 		t.Fatalf("redacted start = %#v", redactedStart)
 	}
 	messageDelta := SSEToChunk(rawEnvelope(`{"type":"message_delta","delta":{"stop_reason":"max_tokens"},"usage":{"output_tokens":4}}`), ExecutionOptions{})
-	if messageDelta.FinishReason != "length" || messageDelta.TokenUsage.Result != 4 {
+	if messageDelta.FinishReason != "length" || messageDelta.TokenUsage.Result == nil || *messageDelta.TokenUsage.Result != 4 {
 		t.Fatalf("message_delta = %#v", messageDelta)
 	}
 	if chunk := SSEToChunk(rawEnvelope(`{"type":"content_block_delta","delta":{"type":"signature_delta"}}`), ExecutionOptions{}); len(chunk.Result) != 0 {

@@ -525,7 +525,7 @@ func (d *VertexAIDriver) requestVertexImagen(ctx context.Context, prompt vertexI
 		if prediction.BytesBase64Encoded == "" {
 			continue
 		}
-		results = append(results, CompletionResult{Type: ResultTypeImage, Value: "data:image/png;base64," + prediction.BytesBase64Encoded})
+		results = append(results, newImageResult("data:image/png;base64,"+prediction.BytesBase64Encoded))
 	}
 	return &Completion{Result: results}, nil
 }
@@ -667,7 +667,7 @@ func geminiTools(tools []ToolDefinition) []map[string]any {
 		// with the older provider-specific parameters field.
 		out = append(out, map[string]any{
 			"name":                 tool.Name,
-			"description":          tool.Description,
+			"description":          stringValue(tool.Description),
 			"parametersJsonSchema": tool.InputSchema,
 		})
 	}
@@ -736,9 +736,13 @@ func buildGeminiStreamingConversation(prompt geminiPrompt, completion *Completio
 		parts = append(parts, geminiPart{Text: text})
 	}
 	for _, tool := range completion.ToolUse {
+		var args any
+		if tool.ToolInput != nil {
+			args = map[string]any(*tool.ToolInput)
+		}
 		parts = append(parts, geminiPart{
-			FunctionCall:     &geminiFunctionCall{Name: tool.ToolName, Args: tool.ToolInput},
-			ThoughtSignature: tool.ThoughtSignature,
+			FunctionCall:     &geminiFunctionCall{Name: tool.ToolName, Args: args},
+			ThoughtSignature: stringValue(tool.ThoughtSignature),
 		})
 	}
 	if len(parts) > 0 {
@@ -951,16 +955,33 @@ func geminiResponseToCompletion(response geminiResponse, includeOriginal bool) *
 	completion := &Completion{
 		Result:       chunk.Result,
 		TokenUsage:   chunk.TokenUsage,
-		ToolUse:      chunk.ToolUse,
+		ToolUse:      geminiToolUses(chunk.ToolUse),
 		FinishReason: chunk.FinishReason,
 	}
 	if len(completion.Result) == 0 {
-		completion.Result = []CompletionResult{{Type: ResultTypeText, Value: ""}}
+		completion.Result = []CompletionResult{newTextResult("")}
 	}
 	if includeOriginal {
 		completion.OriginalResponse = response
 	}
 	return completion
+}
+
+// geminiToolUses converts the function-call chunks of a full response into the
+// final ToolUse entries, carrying the thought signature only when Gemini sent one.
+func geminiToolUses(chunks []ToolUseChunk) []ToolUse {
+	if chunks == nil {
+		return nil
+	}
+	tools := make([]ToolUse, 0, len(chunks))
+	for _, chunk := range chunks {
+		tool := ToolUse{ID: chunk.ID, ToolName: chunk.ToolName, ToolInput: toolInputObject(chunk.ToolInput)}
+		if chunk.ThoughtSignature != "" {
+			tool.ThoughtSignature = ptr(chunk.ThoughtSignature)
+		}
+		tools = append(tools, tool)
+	}
+	return tools
 }
 
 // geminiResponseToChunk converts a response (full or streamed) into a CompletionChunk:
@@ -971,7 +992,7 @@ func geminiResponseToChunk(response geminiResponse) CompletionChunk {
 	chunk := CompletionChunk{TokenUsage: geminiUsage(response.UsageMetadata.PromptTokenCount, response.UsageMetadata.CandidatesTokenCount+response.UsageMetadata.ThoughtsTokenCount+response.UsageMetadata.ToolUsePromptTokenCount, response.UsageMetadata.TotalTokenCount, response.UsageMetadata.CachedContentTokenCount)}
 	if len(response.Candidates) == 0 {
 		if response.PromptFeedback.BlockReasonMessage != "" {
-			chunk.Result = []CompletionResult{{Type: ResultTypeText, Value: response.PromptFeedback.BlockReasonMessage}}
+			chunk.Result = []CompletionResult{newTextResult(response.PromptFeedback.BlockReasonMessage)}
 		}
 		chunk.FinishReason = response.PromptFeedback.BlockReason
 		return chunk
@@ -980,16 +1001,16 @@ func geminiResponseToChunk(response geminiResponse) CompletionChunk {
 	chunk.FinishReason = geminiFinishReason(candidate.FinishReason)
 	for _, part := range candidate.Content.Parts {
 		if part.Text != "" {
-			chunk.Result = append(chunk.Result, CompletionResult{Type: ResultTypeText, Value: part.Text})
+			chunk.Result = append(chunk.Result, newTextResult(part.Text))
 		}
 		if part.InlineData != nil {
-			chunk.Result = append(chunk.Result, CompletionResult{Type: ResultTypeImage, Value: "data:" + part.InlineData.MIMEType + ";base64," + part.InlineData.Data})
+			chunk.Result = append(chunk.Result, newImageResult("data:"+part.InlineData.MIMEType+";base64,"+part.InlineData.Data))
 		}
 		if part.FunctionCall != nil {
 			// Tool-call finish reasons are recoverable: return tool_use so the
 			// caller can execute the tool or report a toolError, rather than
 			// treating the model response as a provider failure.
-			chunk.ToolUse = append(chunk.ToolUse, ToolUse{
+			chunk.ToolUse = append(chunk.ToolUse, ToolUseChunk{
 				ID:               part.FunctionCall.Name,
 				ToolName:         part.FunctionCall.Name,
 				ToolInput:        part.FunctionCall.Args,
@@ -1009,7 +1030,13 @@ func geminiUsage(prompt, result, total, cached int) *ExecutionTokenUsage {
 	if prompt == 0 && result == 0 && total == 0 && cached == 0 {
 		return nil
 	}
-	return &ExecutionTokenUsage{Prompt: prompt, Result: result, Total: total, PromptCached: cached, PromptNew: prompt - cached}
+	return &ExecutionTokenUsage{
+		Prompt:       tokens(prompt),
+		Result:       tokens(result),
+		Total:        tokens(total),
+		PromptCached: tokens(cached),
+		PromptNew:    tokens(prompt - cached),
+	}
 }
 
 // geminiFinishReason maps Gemini finish reasons to the neutral vocabulary, passing
@@ -1061,14 +1088,22 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 			continue
 		}
 		for _, model := range append(response.PublisherModels, response.Models...) {
-			if params != nil && params.Text != "" && !strings.Contains(strings.ToLower(model.Name), strings.ToLower(params.Text)) {
+			if params != nil && stringValue(params.Text) != "" && !strings.Contains(strings.ToLower(model.Name), strings.ToLower(*params.Text)) {
 				continue
 			}
 			name := model.DisplayName
 			if name == "" {
 				name = shortResourceName(model.Name)
 			}
-			models = append(models, AIModel{ID: model.Name, Name: name, Provider: ProviderVertexAI, Owner: item.publisher, Type: "text", CanStream: true, ToolSupport: true})
+			models = append(models, AIModel{
+				ID:          model.Name,
+				Name:        name,
+				Provider:    string(ProviderVertexAI),
+				Owner:       ptr(item.publisher),
+				Type:        ptr(ModelType("text")),
+				CanStream:   ptr(true),
+				ToolSupport: ptr(true),
+			})
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
@@ -1161,15 +1196,15 @@ func (d *VertexAIDriver) generateVertexTextPredictEmbeddings(ctx context.Context
 			if len(values) == 0 {
 				return nil, fmt.Errorf("gemini enterprise agent platform predict returned an empty embedding for input %d (model %s)", i, model)
 			}
-			tokens := prediction.Embeddings.Statistics.TokenCount
+			tokenCount := prediction.Embeddings.Statistics.TokenCount
 			items[batch[i].index] = EmbeddingResultItem{
-				Outputs:     []EmbeddingOutput{{Values: values, Modality: embeddingInputText}},
-				InputTokens: tokens,
+				Outputs:     []EmbeddingOutput{{Values: values, Modality: embeddingModality(embeddingInputText)}},
+				InputTokens: reportedTokens(tokenCount),
 			}
-			if tokens > 0 {
+			if tokenCount > 0 {
 				usageSet = true
-				usage.InputTokens += tokens
-				usage.InputTextTokens += tokens
+				addTokens(&usage.InputTokens, tokenCount)
+				addTokens(&usage.InputTextTokens, tokenCount)
 			}
 		}
 	}
@@ -1242,12 +1277,12 @@ func (d *VertexAIDriver) generateVertexEmbedContentEmbeddings(ctx context.Contex
 		if len(response.Embedding.Values) == 0 {
 			return nil, fmt.Errorf("gemini enterprise agent platform embedContent returned an empty embedding for input %d (model %s)", len(items), model)
 		}
-		tokens := response.UsageMetadata.PromptTokenCount
+		tokenCount := response.UsageMetadata.PromptTokenCount
 		items = append(items, EmbeddingResultItem{
-			Outputs:     []EmbeddingOutput{{Values: response.Embedding.Values, Modality: input.Type}},
-			InputTokens: tokens,
+			Outputs:     []EmbeddingOutput{{Values: response.Embedding.Values, Modality: embeddingModality(input.Type)}},
+			InputTokens: reportedTokens(tokenCount),
 		})
-		if tokens > 0 {
+		if tokenCount > 0 {
 			usageSet = true
 			addVertexEmbeddingUsage(usage, input.Type, response.UsageMetadata)
 		}
@@ -1406,22 +1441,22 @@ func vertexEmbeddingRegion(model string) string {
 func addVertexEmbeddingUsage(usage *EmbeddingsTokenUsage, inputType string, metadata vertexEmbeddingUsageMetadata) {
 	// Gemini Enterprise Agent Platform reports aggregate prompt tokens and, on newer models, modality
 	// details. Fall back to the input modality when details are absent.
-	usage.InputTokens += metadata.PromptTokenCount
+	addTokens(&usage.InputTokens, metadata.PromptTokenCount)
 	if len(metadata.PromptTokensDetail) == 0 {
 		switch inputType {
 		case embeddingInputImage:
-			usage.InputImageTokens += metadata.PromptTokenCount
+			addTokens(&usage.InputImageTokens, metadata.PromptTokenCount)
 		default:
-			usage.InputTextTokens += metadata.PromptTokenCount
+			addTokens(&usage.InputTextTokens, metadata.PromptTokenCount)
 		}
 		return
 	}
 	for _, detail := range metadata.PromptTokensDetail {
 		switch strings.ToUpper(detail.Modality) {
 		case "IMAGE":
-			usage.InputImageTokens += detail.TokenCount
+			addTokens(&usage.InputImageTokens, detail.TokenCount)
 		default:
-			usage.InputTextTokens += detail.TokenCount
+			addTokens(&usage.InputTextTokens, detail.TokenCount)
 		}
 	}
 }
@@ -1577,30 +1612,30 @@ func vertexLegacyMultimodalOutputs(prediction vertexLegacyMultimodalPrediction, 
 	// legacy API returned, matching the TS driver's tolerant normalization.
 	switch {
 	case modality == embeddingInputText && len(prediction.TextEmbedding) > 0:
-		return []EmbeddingOutput{{Values: prediction.TextEmbedding, Modality: embeddingInputText}}, nil
+		return []EmbeddingOutput{{Values: prediction.TextEmbedding, Modality: embeddingModality(embeddingInputText)}}, nil
 	case modality == embeddingInputImage && len(prediction.ImageEmbedding) > 0:
-		return []EmbeddingOutput{{Values: prediction.ImageEmbedding, Modality: embeddingInputImage}}, nil
+		return []EmbeddingOutput{{Values: prediction.ImageEmbedding, Modality: embeddingModality(embeddingInputImage)}}, nil
 	case (modality == embeddingInputVideo || modality == embeddingInputAudio) && len(prediction.VideoEmbeddings) > 0:
 		outputs := make([]EmbeddingOutput, 0, len(prediction.VideoEmbeddings))
 		for _, segment := range prediction.VideoEmbeddings {
 			outputs = append(outputs, EmbeddingOutput{
 				Values:   segment.Embedding,
-				Modality: modality,
+				Modality: embeddingModality(modality),
 				StartSec: segment.StartOffsetSec,
 				EndSec:   segment.EndOffsetSec,
 			})
 		}
 		return outputs, nil
 	case len(prediction.TextEmbedding) > 0:
-		return []EmbeddingOutput{{Values: prediction.TextEmbedding, Modality: embeddingInputText}}, nil
+		return []EmbeddingOutput{{Values: prediction.TextEmbedding, Modality: embeddingModality(embeddingInputText)}}, nil
 	case len(prediction.ImageEmbedding) > 0:
-		return []EmbeddingOutput{{Values: prediction.ImageEmbedding, Modality: embeddingInputImage}}, nil
+		return []EmbeddingOutput{{Values: prediction.ImageEmbedding, Modality: embeddingModality(embeddingInputImage)}}, nil
 	case len(prediction.VideoEmbeddings) > 0:
 		outputs := make([]EmbeddingOutput, 0, len(prediction.VideoEmbeddings))
 		for _, segment := range prediction.VideoEmbeddings {
 			outputs = append(outputs, EmbeddingOutput{
 				Values:   segment.Embedding,
-				Modality: embeddingInputVideo,
+				Modality: embeddingModality(embeddingInputVideo),
 				StartSec: segment.StartOffsetSec,
 				EndSec:   segment.EndOffsetSec,
 			})

@@ -17,9 +17,12 @@ type ExecutionResponse = common.ExecutionResponse
 type CompletionStream = common.CompletionStream
 type CompletionChunk = common.CompletionChunk
 type CompletionResult = common.CompletionResult
-type ResultType = common.ResultType
 type ToolDefinition = common.ToolDefinition
 type ToolUse = common.ToolUse
+type ToolUseChunk = common.ToolUseChunk
+type JSONObject = common.JSONObject
+type ModelType = common.ModelType
+type EmbeddingOutputModality = common.EmbeddingOutputModality
 type ExecutionTokenUsage = common.ExecutionTokenUsage
 type ResultValidationError = common.ResultValidationError
 type EmbeddingTaskType = common.EmbeddingTaskType
@@ -45,9 +48,10 @@ const (
 	PromptRoleMask      = common.PromptRoleMask
 	PromptRoleTool      = common.PromptRoleTool
 
-	ResultTypeText  = common.ResultTypeText
-	ResultTypeJSON  = common.ResultTypeJSON
-	ResultTypeImage = common.ResultTypeImage
+	ResultTypeText     = common.ResultTypeText
+	ResultTypeThoughts = common.ResultTypeThoughts
+	ResultTypeJSON     = common.ResultTypeJSON
+	ResultTypeImage    = common.ResultTypeImage
 
 	EmbeddingTaskQuery    = common.EmbeddingTaskQuery
 	EmbeddingTaskDocument = common.EmbeddingTaskDocument
@@ -80,6 +84,16 @@ var (
 	claudeSupportsAdaptiveThinking        = core.ClaudeSupportsAdaptiveThinking
 	claudeHasSamplingParameterRestriction = core.ClaudeHasSamplingParameterRestriction
 	retryableFromStatusAndMessage         = core.RetryableFromStatusAndMessage
+	newTextResult                         = core.NewTextResult
+	newImageResult                        = core.NewImageResult
+	toolInputObject                       = core.ToolInputObject
+	tokens                                = core.Tokens
+	count                                 = core.Count
 	boolPtr                               = common.BoolPtr
 	newLlumiverseError                    = common.NewLlumiverseError
 )
+
+// ptr returns a pointer to v, for the optional fields of the generated types.
+func ptr[T any](v T) *T {
+	return core.Ptr(v)
+}

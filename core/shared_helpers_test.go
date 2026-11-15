@@ -83,17 +83,17 @@ func TestResultAndMapHelpers(t *testing.T) {
 	}
 
 	completion := &Completion{Result: []CompletionResult{
-		{Type: ResultTypeText, Value: "not json"},
-		{Type: ResultTypeText, Value: "```json\n{\"ok\":true}\n```"},
+		NewTextResult("not json"),
+		NewTextResult("```json\n{\"ok\":true}\n```"),
 	}}
 	NormalizeJSONResult(completion)
-	if completion.Result[0].Type != ResultTypeText || completion.Result[1].Type != ResultTypeJSON {
+	if completion.Result[0].Type() != ResultTypeText || completion.Result[1].Type() != ResultTypeJSON {
 		t.Fatalf("NormalizeJSONResult = %#v", completion.Result)
 	}
 	text := CompletionResultsToText([]CompletionResult{
-		{Type: ResultTypeText, Value: "hello"},
-		{Type: ResultTypeJSON, Value: map[string]any{"ok": true}},
-		{Type: ResultTypeImage, Value: "ignored"},
+		NewTextResult("hello"),
+		NewJSONResult(map[string]any{"ok": true}),
+		NewImageResult("ignored"),
 	})
 	if text != `hello{"ok":true}` {
 		t.Fatalf("CompletionResultsToText = %q", text)

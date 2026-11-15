@@ -57,7 +57,7 @@ func TestExecuteWithPromptNormalizesJSONAndSetsMetadata(t *testing.T) {
 		if options.Model != "gpt-test" {
 			t.Fatalf("model = %q", options.Model)
 		}
-		return &Completion{Result: []CompletionResult{{Type: ResultTypeText, Value: `{"ok":true}`}}}, nil
+		return &Completion{Result: []CompletionResult{NewTextResult(`{"ok":true}`)}}, nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -65,10 +65,14 @@ func TestExecuteWithPromptNormalizesJSONAndSetsMetadata(t *testing.T) {
 	if !reflect.DeepEqual(resp.Prompt, driver.prompt) {
 		t.Fatalf("Prompt = %#v", resp.Prompt)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type != ResultTypeJSON {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeJSON {
 		t.Fatalf("Result = %#v", resp.Result)
 	}
-	parsed := resp.Result[0].Value.(map[string]any)
+	result, err := resp.Result[0].AsJSONResult()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed := result.Value.(map[string]any)
 	if parsed["ok"] != true {
 		t.Fatalf("parsed = %#v", parsed)
 	}

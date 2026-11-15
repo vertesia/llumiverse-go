@@ -32,7 +32,7 @@ type channelStream struct {
 // When arguments arrive as partial JSON strings they are appended to stringInput
 // (usesStringBuf) and parsed once the stream completes.
 type streamToolAccumulator struct {
-	tool          ToolUse
+	tool          ToolUseChunk
 	stringInput   string
 	usesStringBuf bool
 }
@@ -116,7 +116,7 @@ func (s *channelStream) applyChunk(chunk CompletionChunk) {
 // accumulators, synthesizing an ID when the provider omits one and reusing the
 // last seen ID for continuation deltas. String argument fragments are appended
 // for later parsing; object arguments are merged key-by-key.
-func (s *channelStream) mergeStreamTools(tools []ToolUse) {
+func (s *channelStream) mergeStreamTools(tools []ToolUseChunk) {
 	// Tool-call arguments often arrive as partial JSON strings. Preserve order
 	// by tool ID and stitch string deltas before exposing the final tool list.
 	if s.tools == nil {
@@ -133,7 +133,7 @@ func (s *channelStream) mergeStreamTools(tools []ToolUse) {
 		}
 		acc := s.tools[id]
 		if acc == nil {
-			acc = &streamToolAccumulator{tool: ToolUse{ID: id}}
+			acc = &streamToolAccumulator{tool: ToolUseChunk{ID: id}}
 			s.tools[id] = acc
 			s.toolOrder = append(s.toolOrder, id)
 		}
@@ -175,8 +175,10 @@ func (s *channelStream) finalizeCompletion() {
 			return
 		}
 		s.completion.ExecutionTime = time.Since(s.start)
-		if s.completion.TokenUsage != nil && s.completion.TokenUsage.Total < s.completion.TokenUsage.Prompt+s.completion.TokenUsage.Result {
-			s.completion.TokenUsage.Total = s.completion.TokenUsage.Prompt + s.completion.TokenUsage.Result
+		if usage := s.completion.TokenUsage; usage != nil {
+			if sum := Count(usage.Prompt) + Count(usage.Result); Count(usage.Total) < sum {
+				usage.Total = &sum
+			}
 		}
 		if len(s.toolOrder) == 0 {
 			if s.finalizer != nil {
@@ -191,15 +193,19 @@ func (s *channelStream) finalizeCompletion() {
 			if acc == nil {
 				continue
 			}
-			tool := acc.tool
+			input := acc.tool.ToolInput
 			if acc.usesStringBuf {
 				var parsed any
 				if err := json.Unmarshal([]byte(acc.stringInput), &parsed); err == nil {
-					tool.ToolInput = parsed
+					input = parsed
 				} else {
-					tool.ToolInput = map[string]any{}
+					input = map[string]any{}
 					truncated[id] = true
 				}
+			}
+			tool := ToolUse{ID: acc.tool.ID, ToolName: acc.tool.ToolName, ToolInput: ToolInputObject(input)}
+			if acc.tool.ThoughtSignature != "" {
+				tool.ThoughtSignature = &acc.tool.ThoughtSignature
 			}
 			if s.completion.FinishReason == "length" && truncated[id] {
 				continue
@@ -223,15 +229,20 @@ func mergeStreamResults(dst []CompletionResult, src []CompletionResult) []Comple
 			continue
 		}
 		last := &dst[len(dst)-1]
-		if last.Type == result.Type && (result.Type == ResultTypeText || result.Type == ResultTypeJSON) {
-			if result.Type == ResultTypeText {
-				last.Value = toString(last.Value) + toString(result.Value)
-				continue
-			}
-			if existing, ok := last.Value.(map[string]any); ok {
-				if incoming, ok := result.Value.(map[string]any); ok {
-					maps.Copy(existing, incoming)
-					last.Value = existing
+		kind := result.Type()
+		if last.Type() == kind && kind == ResultTypeText {
+			*last = NewTextResult(last.String() + result.String())
+			continue
+		}
+		if last.Type() == kind && kind == ResultTypeJSON {
+			existing, errExisting := last.AsJSONResult()
+			incoming, errIncoming := result.AsJSONResult()
+			if errExisting == nil && errIncoming == nil {
+				existingObject, okExisting := existing.Value.(map[string]any)
+				incomingObject, okIncoming := incoming.Value.(map[string]any)
+				if okExisting && okIncoming {
+					maps.Copy(existingObject, incomingObject)
+					*last = NewJSONResult(existingObject)
 					continue
 				}
 			}
@@ -252,19 +263,33 @@ func mergeStreamUsage(dst *ExecutionTokenUsage, src *ExecutionTokenUsage) *Execu
 		copy := *src
 		return &copy
 	}
-	dst.Prompt = max(dst.Prompt, src.Prompt)
-	dst.Result = max(dst.Result, src.Result)
-	dst.Total = max(dst.Total, src.Total)
-	if src.PromptCached != 0 {
-		dst.PromptCached = src.PromptCached
-	}
-	if src.PromptCacheWrite != 0 {
-		dst.PromptCacheWrite = src.PromptCacheWrite
-	}
-	if src.PromptNew != 0 {
-		dst.PromptNew = src.PromptNew
+	dst.Prompt = maxCount(dst.Prompt, src.Prompt)
+	dst.Result = maxCount(dst.Result, src.Result)
+	dst.Total = maxCount(dst.Total, src.Total)
+	for _, field := range []struct{ dst, src **float64 }{
+		{&dst.PromptCached, &src.PromptCached},
+		{&dst.PromptCacheWrite, &src.PromptCacheWrite},
+		{&dst.PromptCacheWrite1H, &src.PromptCacheWrite1H},
+		{&dst.PromptNew, &src.PromptNew},
+		{&dst.ResultImage, &src.ResultImage},
+		{&dst.ProviderCostUsd, &src.ProviderCostUsd},
+	} {
+		if Count(*field.src) != 0 {
+			*field.dst = *field.src
+		}
 	}
 	return dst
+}
+
+// maxCount returns the larger of two optional counts, keeping unset when both are unset.
+func maxCount(a, b *float64) *float64 {
+	if a == nil {
+		return b
+	}
+	if b == nil || *a >= *b {
+		return a
+	}
+	return b
 }
 
 // toString returns a string value unchanged and JSON-encodes anything else.

@@ -1169,7 +1169,7 @@ func buildBedrockStreamingConversation(prompt bedrockPrompt, completion *Complet
 		content = append(content, &brtypes.ContentBlockMemberToolUse{Value: brtypes.ToolUseBlock{
 			ToolUseId: aws.String(tool.ID),
 			Name:      aws.String(tool.ToolName),
-			Input:     brdoc.NewLazyDocument(tool.ToolInput),
+			Input:     brdoc.NewLazyDocument(bedrockToolInputDocument(tool.ToolInput)),
 		}})
 	}
 	if len(content) > 0 {
@@ -1453,7 +1453,7 @@ func bedrockTools(tools []ToolDefinition) []brtypes.Tool {
 	for _, tool := range tools {
 		out = append(out, &brtypes.ToolMemberToolSpec{Value: brtypes.ToolSpecification{
 			Name:        aws.String(tool.Name),
-			Description: aws.String(tool.Description),
+			Description: aws.String(aws.ToString(tool.Description)),
 			InputSchema: &brtypes.ToolInputSchemaMemberJson{Value: brdoc.NewLazyDocument(tool.InputSchema)},
 		}})
 	}
@@ -1472,18 +1472,18 @@ func extractBedrockCompletion(output *bedrockruntime.ConverseOutput, options Exe
 		completion.OriginalResponse = output
 	}
 	if output.Output == nil {
-		completion.Result = []CompletionResult{{Type: ResultTypeText, Value: ""}}
+		completion.Result = []CompletionResult{newTextResult("")}
 		return completion
 	}
 	if messageOutput, ok := output.Output.(*brtypes.ConverseOutputMemberMessage); ok {
 		for _, block := range messageOutput.Value.Content {
 			switch value := block.(type) {
 			case *brtypes.ContentBlockMemberText:
-				completion.Result = append(completion.Result, CompletionResult{Type: ResultTypeText, Value: value.Value})
+				completion.Result = append(completion.Result, newTextResult(value.Value))
 			case *brtypes.ContentBlockMemberReasoningContent:
 				if bedrockIncludeThoughts(options) {
 					if text := bedrockReasoningContentText(value.Value); text != "" {
-						completion.Result = append(completion.Result, CompletionResult{Type: ResultTypeText, Value: text})
+						completion.Result = append(completion.Result, newTextResult(text))
 					}
 				}
 			case *brtypes.ContentBlockMemberToolUse:
@@ -1491,18 +1491,27 @@ func extractBedrockCompletion(output *bedrockruntime.ConverseOutput, options Exe
 				completion.ToolUse = append(completion.ToolUse, ToolUse{
 					ID:        aws.ToString(value.Value.ToolUseId),
 					ToolName:  aws.ToString(value.Value.Name),
-					ToolInput: input,
+					ToolInput: toolInputObject(input),
 				})
 			}
 		}
 	}
 	if len(completion.Result) == 0 {
-		completion.Result = []CompletionResult{{Type: ResultTypeText, Value: ""}}
+		completion.Result = []CompletionResult{newTextResult("")}
 	}
 	if len(completion.ToolUse) > 0 {
 		completion.FinishReason = "tool_use"
 	}
 	return completion
+}
+
+// bedrockToolInputDocument returns a tool input as the plain value a Smithy
+// document encodes: the input object as a map, or nil when there is none.
+func bedrockToolInputDocument(input *JSONObject) any {
+	if input == nil {
+		return nil
+	}
+	return map[string]any(*input)
 }
 
 // documentToAny unmarshals a Smithy lazy document into a plain Go value,
@@ -1531,12 +1540,12 @@ func bedrockUsage(usage *brtypes.TokenUsage) *ExecutionTokenUsage {
 	cacheRead := int32Value(usage.CacheReadInputTokens)
 	cacheWrite := int32Value(usage.CacheWriteInputTokens)
 	return &ExecutionTokenUsage{
-		Prompt:           prompt + cacheRead + cacheWrite,
-		PromptNew:        prompt,
-		Result:           result,
-		Total:            total,
-		PromptCached:     cacheRead,
-		PromptCacheWrite: cacheWrite,
+		Prompt:           tokens(prompt + cacheRead + cacheWrite),
+		PromptNew:        tokens(prompt),
+		Result:           tokens(result),
+		Total:            tokens(total),
+		PromptCached:     tokens(cacheRead),
+		PromptCacheWrite: tokens(cacheWrite),
 	}
 }
 
@@ -1545,6 +1554,15 @@ func int32Value(v *int32) int {
 		return 0
 	}
 	return int(*v)
+}
+
+// optionalString returns nil for an empty string (the provider did not report
+// it), and a pointer to s otherwise.
+func optionalString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
 }
 
 // bedrockFinishReason normalizes a Converse stop reason to the common finish
@@ -1608,7 +1626,7 @@ func (s *bedrockStreamState) contentBlockStart(event brtypes.ContentBlockStartEv
 		name: aws.ToString(toolStart.Value.Name),
 	}
 	s.toolBlocks[index] = block
-	return CompletionChunk{ToolUse: []ToolUse{{ID: block.id, ToolName: block.name, ToolInput: ""}}}
+	return CompletionChunk{ToolUse: []ToolUseChunk{{ID: block.id, ToolName: block.name, ToolInput: ""}}}
 }
 
 // contentBlockDelta turns a delta event into a chunk: text deltas, incremental
@@ -1617,11 +1635,11 @@ func (s *bedrockStreamState) contentBlockStart(event brtypes.ContentBlockStartEv
 func (s *bedrockStreamState) contentBlockDelta(event brtypes.ContentBlockDeltaEvent, options ExecutionOptions) CompletionChunk {
 	switch delta := event.Delta.(type) {
 	case *brtypes.ContentBlockDeltaMemberText:
-		return CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: delta.Value}}}
+		return CompletionChunk{Result: []CompletionResult{newTextResult(delta.Value)}}
 	case *brtypes.ContentBlockDeltaMemberToolUse:
 		index := bedrockContentBlockIndex(event.ContentBlockIndex)
 		block := s.toolBlocks[index]
-		return CompletionChunk{ToolUse: []ToolUse{{
+		return CompletionChunk{ToolUse: []ToolUseChunk{{
 			ID:        block.id,
 			ToolName:  "",
 			ToolInput: aws.ToString(delta.Value.Input),
@@ -1631,7 +1649,7 @@ func (s *bedrockStreamState) contentBlockDelta(event brtypes.ContentBlockDeltaEv
 			return CompletionChunk{}
 		}
 		if text := bedrockReasoningDeltaText(delta.Value); text != "" {
-			return CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: text}}}
+			return CompletionChunk{Result: []CompletionResult{newTextResult(text)}}
 		}
 	}
 	return CompletionChunk{}
@@ -1767,13 +1785,13 @@ func bedrockFoundationAIModel(summary bedrocktypes.FoundationModelSummary) AIMod
 	return AIModel{
 		ID:               id,
 		Name:             strings.TrimSpace(aws.ToString(summary.ProviderName) + " " + aws.ToString(summary.ModelName)),
-		Provider:         ProviderBedrock,
-		Owner:            aws.ToString(summary.ProviderName),
-		Type:             "text",
-		CanStream:        aws.ToBool(summary.ResponseStreamingSupported),
-		InputModalities:  bedrockModalities(summary.InputModalities),
-		OutputModalities: bedrockModalities(summary.OutputModalities),
-		ToolSupport:      bedrockLikelySupportsTools(id),
+		Provider:         string(ProviderBedrock),
+		Owner:            ptr(aws.ToString(summary.ProviderName)),
+		Type:             ptr(ModelType("text")),
+		CanStream:        ptr(aws.ToBool(summary.ResponseStreamingSupported)),
+		InputModalities:  ptr(bedrockModalities(summary.InputModalities)),
+		OutputModalities: ptr(bedrockModalities(summary.OutputModalities)),
+		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
 	}
 }
 
@@ -1788,14 +1806,14 @@ func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) AIModel {
 	return AIModel{
 		ID:               id,
 		Name:             name,
-		Provider:         ProviderBedrock,
-		Owner:            "custom",
-		Description:      "Custom model from " + aws.ToString(summary.BaseModelName),
-		Type:             "text",
-		IsCustom:         true,
-		InputModalities:  bedrockCapabilitiesInput(id),
-		OutputModalities: bedrockCapabilitiesOutput(id),
-		ToolSupport:      bedrockLikelySupportsTools(id),
+		Provider:         string(ProviderBedrock),
+		Owner:            ptr("custom"),
+		Description:      ptr("Custom model from " + aws.ToString(summary.BaseModelName)),
+		Type:             ptr(ModelType("text")),
+		IsCustom:         ptr(true),
+		InputModalities:  ptr(bedrockCapabilitiesInput(id)),
+		OutputModalities: ptr(bedrockCapabilitiesOutput(id)),
+		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
 	}
 }
 
@@ -1820,12 +1838,12 @@ func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary
 	return AIModel{
 		ID:               id,
 		Name:             name,
-		Provider:         ProviderBedrock,
-		Owner:            provider,
-		Type:             "text",
-		InputModalities:  bedrockCapabilitiesInput(id),
-		OutputModalities: bedrockCapabilitiesOutput(id),
-		ToolSupport:      bedrockLikelySupportsTools(id),
+		Provider:         string(ProviderBedrock),
+		Owner:            ptr(provider),
+		Type:             ptr(ModelType("text")),
+		InputModalities:  ptr(bedrockCapabilitiesInput(id)),
+		OutputModalities: ptr(bedrockCapabilitiesOutput(id)),
+		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
 	}, true
 }
 
@@ -2032,7 +2050,7 @@ func (d *BedrockDriver) generateBedrockNovaEmbeddings(ctx context.Context, optio
 			return nil, fmt.Errorf("nova embeddings response missing 'embeddings[0].embedding' for input type '%s'", input.Type)
 		}
 		items = append(items, EmbeddingResultItem{
-			Outputs: []EmbeddingOutput{{Values: response.Embeddings[0].Embedding, Modality: input.Type}},
+			Outputs: []EmbeddingOutput{{Values: response.Embeddings[0].Embedding, Modality: ptr(EmbeddingOutputModality(input.Type))}},
 		})
 	}
 	return &EmbeddingsResult{Model: model, Results: items}, nil
@@ -2160,16 +2178,16 @@ func (d *BedrockDriver) generateBedrockTitanEmbeddings(ctx context.Context, opti
 			}
 			return nil, fmt.Errorf("titan text embedding response missing 'embedding' (model %s)", model)
 		}
-		tokens := response.InputTextTokenCount
-		totalTokens += tokens
+		inputTokens := response.InputTextTokenCount
+		totalTokens += inputTokens
 		items = append(items, EmbeddingResultItem{
-			Outputs:     []EmbeddingOutput{{Values: response.Embedding, Modality: input.Type}},
-			InputTokens: tokens,
+			Outputs:     []EmbeddingOutput{{Values: response.Embedding, Modality: ptr(EmbeddingOutputModality(input.Type))}},
+			InputTokens: tokens(inputTokens),
 		})
 	}
 	var usage *EmbeddingsTokenUsage
 	if totalTokens > 0 {
-		usage = &EmbeddingsTokenUsage{InputTokens: totalTokens, InputTextTokens: totalTokens}
+		usage = &EmbeddingsTokenUsage{InputTokens: tokens(totalTokens), InputTextTokens: tokens(totalTokens)}
 	}
 	return &EmbeddingsResult{Model: model, Results: items, Usage: usage}, nil
 }
@@ -2217,7 +2235,7 @@ func (d *BedrockDriver) generateBedrockCohereEmbeddings(ctx context.Context, opt
 			return nil, fmt.Errorf("cohere returned %d embeddings for %d texts (model %s)", len(response.Embeddings), len(group), model)
 		}
 		for i, entry := range group {
-			items[entry.index] = EmbeddingResultItem{Outputs: []EmbeddingOutput{{Values: response.Embeddings[i], Modality: embeddingInputText}}}
+			items[entry.index] = EmbeddingResultItem{Outputs: []EmbeddingOutput{{Values: response.Embeddings[i], Modality: ptr(EmbeddingOutputModality(embeddingInputText))}}}
 		}
 	}
 	for _, entry := range imageInputs {
@@ -2238,7 +2256,7 @@ func (d *BedrockDriver) generateBedrockCohereEmbeddings(ctx context.Context, opt
 		if len(response.Embeddings) == 0 {
 			return nil, fmt.Errorf("cohere returned no embedding for image input (model %s)", model)
 		}
-		items[entry.index] = EmbeddingResultItem{Outputs: []EmbeddingOutput{{Values: response.Embeddings[0], Modality: embeddingInputImage}}}
+		items[entry.index] = EmbeddingResultItem{Outputs: []EmbeddingOutput{{Values: response.Embeddings[0], Modality: ptr(EmbeddingOutputModality(embeddingInputImage))}}}
 	}
 	return &EmbeddingsResult{Model: model, Results: items}, nil
 }
@@ -2291,10 +2309,10 @@ func (d *BedrockDriver) generateBedrockMarengoEmbeddings(ctx context.Context, op
 			}
 			outputs = append(outputs, EmbeddingOutput{
 				Values:          segment.Embedding,
-				Modality:        input.Type,
+				Modality:        ptr(EmbeddingOutputModality(input.Type)),
 				StartSec:        segment.StartSec,
 				EndSec:          segment.EndSec,
-				EmbeddingOption: segment.EmbeddingOption,
+				EmbeddingOption: optionalString(segment.EmbeddingOption),
 			})
 		}
 		if len(outputs) == 0 {
@@ -2478,7 +2496,7 @@ func (d *BedrockDriver) requestBedrockImageGeneration(ctx context.Context, promp
 		if !strings.HasPrefix(value, "data:") {
 			value = "data:image/png;base64," + value
 		}
-		results = append(results, CompletionResult{Type: ResultTypeImage, Value: value})
+		results = append(results, newImageResult(value))
 	}
 	completion := &Completion{Result: results}
 	if response.Error != nil {

@@ -34,5 +34,5 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println(resp.Result[0].Value)
+	fmt.Println(resp.Result[0].String())
 }

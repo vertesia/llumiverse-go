@@ -347,7 +347,7 @@ func claudePayload(prompt claudePrompt, options ExecutionOptions, stream bool, h
 			return nil, nil, errors.New(`claude tool input_schema.type must be "object"`)
 		}
 	}
-	maxTokens := claudeMaxTokens(options)
+	maxTokens := claudeMaxtokens(options)
 	payload := map[string]any{
 		"model":      options.Model,
 		"messages":   prompt.Messages,
@@ -395,7 +395,7 @@ func claudeTools(tools []ToolDefinition, cacheEnabled bool) []map[string]any {
 	for i, tool := range tools {
 		item := map[string]any{
 			"name":         tool.Name,
-			"description":  tool.Description,
+			"description":  stringValue(tool.Description),
 			"input_schema": tool.InputSchema,
 		}
 		if cacheEnabled && i == len(tools)-1 {
@@ -475,9 +475,9 @@ func buildClaudeStreamingConversation(conversation claudePrompt, completion *Com
 		content = append(content, claudeBlock{Type: "text", Text: text})
 	}
 	for _, tool := range completion.ToolUse {
-		input := tool.ToolInput
-		if input == nil {
-			input = map[string]any{}
+		input := map[string]any{}
+		if tool.ToolInput != nil {
+			input = map[string]any(*tool.ToolInput)
 		}
 		content = append(content, claudeBlock{Type: "tool_use", ID: tool.ID, Name: tool.ToolName, Input: input})
 	}
@@ -682,7 +682,7 @@ func stripClaudeCacheControlFromBlocks(blocks []claudeBlock) []claudeBlock {
 // claudeMaxTokens resolves the max_tokens value: an explicit option wins,
 // otherwise Claude 3.7 Sonnet defaults to 64k (unless a large thinking budget
 // pushes it onto the 128k beta path), with a 4096 fallback for other models.
-func claudeMaxTokens(options ExecutionOptions) int {
+func claudeMaxtokens(options ExecutionOptions) int {
 	if v := optionInt(options.ModelOptions, "max_tokens"); v != nil {
 		return *v
 	}
@@ -818,12 +818,12 @@ func extractClaudeCompletion(response claudeResponse, options ExecutionOptions) 
 			tools = append(tools, ToolUse{
 				ID:        block.ID,
 				ToolName:  block.Name,
-				ToolInput: safeJSONParse(string(block.Input)),
+				ToolInput: toolInputObject(safeJSONParse(string(block.Input))),
 			})
 		}
 	}
 	text := strings.Join(parts, "\n")
-	result := []CompletionResult{{Type: ResultTypeText, Value: text}}
+	result := []CompletionResult{newTextResult(text)}
 	completion := &Completion{
 		Result:       result,
 		ToolUse:      tools,
@@ -845,12 +845,12 @@ func claudeUsage(input, output, cacheRead, cacheWrite int) *ExecutionTokenUsage 
 		return nil
 	}
 	return &ExecutionTokenUsage{
-		Prompt:           input + cacheRead + cacheWrite,
-		PromptNew:        input,
-		Result:           output,
-		Total:            input + output + cacheRead + cacheWrite,
-		PromptCached:     cacheRead,
-		PromptCacheWrite: cacheWrite,
+		Prompt:           tokens(input + cacheRead + cacheWrite),
+		PromptNew:        tokens(input),
+		Result:           tokens(output),
+		Total:            tokens(input + output + cacheRead + cacheWrite),
+		PromptCached:     tokens(cacheRead),
+		PromptCacheWrite: tokens(cacheWrite),
 	}
 }
 
@@ -910,10 +910,10 @@ func claudeSSEToChunk(envelope map[string]json.RawMessage, options ExecutionOpti
 		}
 		_ = json.Unmarshal(mustMarshal(envelope), &msg)
 		if msg.ContentBlock.Type == "tool_use" {
-			return CompletionChunk{ToolUse: []ToolUse{{ID: msg.ContentBlock.ID, ToolName: msg.ContentBlock.Name, ToolInput: safeJSONParse(string(msg.ContentBlock.Input))}}}
+			return CompletionChunk{ToolUse: []ToolUseChunk{{ID: msg.ContentBlock.ID, ToolName: msg.ContentBlock.Name, ToolInput: safeJSONParse(string(msg.ContentBlock.Input))}}}
 		}
 		if msg.ContentBlock.Type == "redacted_thinking" && includeThoughts && msg.ContentBlock.Data != "" {
-			return CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: "[Redacted thinking: " + msg.ContentBlock.Data + "]"}}}
+			return CompletionChunk{Result: []CompletionResult{newTextResult("[Redacted thinking: " + msg.ContentBlock.Data + "]")}}
 		}
 	case "content_block_delta":
 		var msg struct {
@@ -926,16 +926,16 @@ func claudeSSEToChunk(envelope map[string]json.RawMessage, options ExecutionOpti
 		}
 		_ = json.Unmarshal(mustMarshal(envelope), &msg)
 		if msg.Delta.Type == "text_delta" && msg.Delta.Text != "" {
-			return CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: msg.Delta.Text}}}
+			return CompletionChunk{Result: []CompletionResult{newTextResult(msg.Delta.Text)}}
 		}
 		if msg.Delta.Type == "input_json_delta" && msg.Delta.PartialJSON != "" {
-			return CompletionChunk{ToolUse: []ToolUse{{ToolInput: msg.Delta.PartialJSON}}}
+			return CompletionChunk{ToolUse: []ToolUseChunk{{ToolInput: msg.Delta.PartialJSON}}}
 		}
 		if msg.Delta.Type == "thinking_delta" && includeThoughts && msg.Delta.Thinking != "" {
-			return CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: msg.Delta.Thinking}}}
+			return CompletionChunk{Result: []CompletionResult{newTextResult(msg.Delta.Thinking)}}
 		}
 		if msg.Delta.Type == "signature_delta" && includeThoughts {
-			return CompletionChunk{Result: []CompletionResult{{Type: ResultTypeText, Value: "\n\n"}}}
+			return CompletionChunk{Result: []CompletionResult{newTextResult("\n\n")}}
 		}
 	}
 	return CompletionChunk{}
@@ -979,7 +979,14 @@ func (d *AnthropicDriver) ListModels(ctx context.Context, _ *ModelSearchPayload)
 		if name == "" {
 			name = item.ID
 		}
-		models = append(models, AIModel{ID: item.ID, Name: name, Provider: ProviderAnthropic, Type: "text", CanStream: true, ToolSupport: true})
+		models = append(models, AIModel{
+			ID:          item.ID,
+			Name:        name,
+			Provider:    string(ProviderAnthropic),
+			Type:        ptr(ModelType("text")),
+			CanStream:   ptr(true),
+			ToolSupport: ptr(true),
+		})
 	}
 	return models, nil
 }
