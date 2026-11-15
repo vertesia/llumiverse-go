@@ -95,6 +95,67 @@ func TestFinalizeStreamingToolUse(t *testing.T) {
 	})
 }
 
+// Mirrors the TS client's "streamed tool calls cut off by a stop" tests.
+func TestFinalizeStreamingToolUseAfterACutOffStop(t *testing.T) {
+	t.Parallel()
+
+	calls := func() []ToolUseChunk {
+		return []ToolUseChunk{
+			{ID: "toolu_1", ToolName: "search", ToolInput: `{"query":"expenses 2025"}`},
+			{ID: "toolu_2", ToolName: "think", ToolInput: `{"message_to_human":"Plan`},
+			{ID: "toolu_3", ToolName: "think", ToolInput: ""},
+		}
+	}
+	complete := ToolUse{ID: "toolu_1", ToolName: "search", ToolInput: &JSONObject{"query": "expenses 2025"}}
+
+	for _, reason := range []string{"length", "refusal", "content_filter", "content_filtered", "guardrail_intervened"} {
+		if !IsCutOffFinishReason(reason) {
+			t.Fatalf("%s is a cut-off finish reason", reason)
+		}
+		tools, err := FinalizeStreamingToolUse(calls(), reason, streamToolTestContext)
+		if err != nil || !reflect.DeepEqual(tools, []ToolUse{complete}) {
+			t.Fatalf("%s: tools = %#v, err = %v", reason, tools, err)
+		}
+	}
+	for _, reason := range []string{"", "stop", "tool_use"} {
+		if IsCutOffFinishReason(reason) {
+			t.Fatalf("%q is not a cut-off finish reason", reason)
+		}
+	}
+
+	t.Run("keeps an earlier zero-argument call: only the last call can have been cut off", func(t *testing.T) {
+		tools, err := FinalizeStreamingToolUse([]ToolUseChunk{
+			{ID: "toolu_0", ToolName: "list_files", ToolInput: ""},
+			{ID: "toolu_1", ToolName: "search", ToolInput: `{"query":"expenses 2025"}`},
+			{ID: "toolu_2", ToolName: "think", ToolInput: `{"message_to_human":"Plan`},
+		}, "refusal", streamToolTestContext)
+		want := []ToolUse{{ID: "toolu_0", ToolName: "list_files", ToolInput: &JSONObject{}}, complete}
+		if err != nil || !reflect.DeepEqual(tools, want) {
+			t.Fatalf("tools = %#v, err = %v", tools, err)
+		}
+	})
+
+	t.Run("still rejects malformed arguments when the response was not cut off", func(t *testing.T) {
+		_, err := FinalizeStreamingToolUse(calls(), "tool_use", streamToolTestContext)
+		if !IsMalformedStreamingToolArguments(err) || !strings.Contains(err.Error(), "malformed JSON arguments") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+
+	for text, want := range map[string]bool{
+		`{"query":"x"}`: true,
+		`{}`:            true,
+		`{"query":"x"`:  false,
+		`[1]`:           false,
+		`null`:          false,
+		``:              false,
+	} {
+		if got := IsJSONObjectText(text); got != want {
+			t.Fatalf("IsJSONObjectText(%q) = %v", text, got)
+		}
+	}
+}
+
 // streamThroughLifecycle streams fixed chunks through the shared lifecycle, so errors raised
 // while finalizing carry the provider and model.
 func streamThroughLifecycle(t *testing.T, chunks ...CompletionChunk) CompletionStream {

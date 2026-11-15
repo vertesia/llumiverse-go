@@ -39,6 +39,14 @@ func newMalformedStreamingToolArgumentsError(tool ToolUseChunk, finishReason str
 	return NewLlumiverseError(message, BoolPtr(false), errContext, original, 0, MalformedStreamingToolArgumentsErrorName)
 }
 
+// IsJSONObjectText reports whether text is a complete JSON object, parsed strictly and never
+// repaired: tool-call arguments that were cut off do not count as complete. Drivers use it to tell
+// a finished call from one a stop cut off.
+func IsJSONObjectText(text string) bool {
+	var object map[string]any
+	return json.Unmarshal([]byte(text), &object) == nil && object != nil
+}
+
 // accumulateToolUseChunk merges one streamed fragment into the tool call accumulated so far, the
 // TS client's accumulateToolUseChunk. Argument strings are concatenated and argument objects
 // merged; a later fragment may carry the tool name; thought-signature fragments are concatenated.
@@ -79,9 +87,10 @@ func accumulateToolUseChunk(existing *ToolUseChunk, tool ToolUseChunk) {
 
 // FinalizeStreamingToolUse turns the accumulated tool calls of a finished stream into the
 // completion's tool calls, the TS client's finalizeStreamingToolUse: string arguments are parsed
-// as JSON, and empty arguments (a call to a tool without parameters) become an empty object. A
-// call whose arguments do not parse was cut off when the response stopped on a length limit, so
-// it is left out and the other calls are kept. Without such a stop, malformed arguments are model
+// as JSON, and empty arguments (a call to a tool without parameters) become an empty object. When
+// the response was cut off (IsCutOffFinishReason: a length limit, a refusal, a content filter), a
+// call whose arguments do not parse, or a last call with no arguments yet, is left out and the
+// other calls are kept. Without such a stop, malformed arguments are model
 // output to regenerate: they are never coerced to an empty object, which could run a tool with
 // invented arguments, and the complete calls are returned with a non-retryable LlumiverseError
 // named MalformedStreamingToolArgumentsErrorName. errContext names the provider and model in
@@ -96,6 +105,7 @@ func finalizeStreamingToolUse(tools []ToolUseChunk, finishReason string, errCont
 		return nil, nil
 	}
 	finalized := make([]ToolUse, 0, len(tools))
+	cutOff := IsCutOffFinishReason(finishReason)
 	var malformed *ToolUseChunk
 	var parseErr error
 	for i, tool := range tools {
@@ -104,9 +114,10 @@ func finalizeStreamingToolUse(tools []ToolUseChunk, finishReason string, errCont
 			var parsed any
 			if strings.TrimSpace(text) == "" {
 				// Claude streams a call without arguments as one empty partial_json:
-				// a complete call, unless a length stop cut it off before its first
-				// argument fragment arrived.
-				if finishReason == "length" {
+				// a complete call, unless the response stopped before the first
+				// argument fragment of its last call arrived. Calls stream one after
+				// another, so only the last one can have been cut off.
+				if cutOff && i == len(tools)-1 {
 					if malformed == nil {
 						malformed = &tools[i]
 					}
@@ -131,7 +142,7 @@ func finalizeStreamingToolUse(tools []ToolUseChunk, finishReason string, errCont
 	if len(finalized) == 0 {
 		finalized = nil
 	}
-	if malformed == nil || finishReason == "length" {
+	if malformed == nil || cutOff {
 		return finalized, nil
 	}
 	return finalized, newMalformedStreamingToolArgumentsError(*malformed, finishReason, errContext, parseErr)
