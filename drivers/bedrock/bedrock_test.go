@@ -17,6 +17,7 @@ import (
 	bedrockruntime "github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go"
 	"github.com/vertesia/llumiverse-go/common"
 )
 
@@ -279,6 +280,7 @@ func TestBedrockPromptFileAndConversationBranches(t *testing.T) {
 		{Role: PromptRoleNegative, Content: "ignored"},
 		{Role: PromptRoleMask, Content: "ignored"},
 	}, ExecutionOptions{
+		Model:        "amazon.nova-pro-v1:0",
 		ResultSchema: map[string]any{"type": "object"},
 		Tools:        []ToolDefinition{{Name: "lookup", InputSchema: map[string]any{"type": "object"}}},
 	})
@@ -374,7 +376,8 @@ func TestBedrockListModelsIncludesCustomAndInferenceProfiles(t *testing.T) {
 	if !aws.ToBool(byID["arn:custom:model"].IsCustom) || aws.ToString(byID["arn:custom:model"].Owner) != "custom" {
 		t.Fatalf("custom model = %#v", byID["arn:custom:model"])
 	}
-	if aws.ToString(byID["arn:profile:anthropic"].Owner) != "anthropic" {
+	// The profile takes the publisher name the foundation catalog reports.
+	if aws.ToString(byID["arn:profile:anthropic"].Owner) != "Anthropic" {
 		t.Fatalf("profile model = %#v", byID["arn:profile:anthropic"])
 	}
 }
@@ -467,6 +470,14 @@ func TestBedrockToolResultFiles(t *testing.T) {
 		},
 	}}, ExecutionOptions{
 		Model: "anthropic.claude-3-5-sonnet-20241022-v2:0",
+		// The tool result answers a toolUse from the stored conversation; an
+		// unanswered result would be dropped as an orphan.
+		Conversation: bedrockPrompt{Messages: []brtypes.Message{
+			{Role: brtypes.ConversationRoleUser, Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberText{Value: "look it up"}}},
+			{Role: brtypes.ConversationRoleAssistant, Content: []brtypes.ContentBlock{&brtypes.ContentBlockMemberToolUse{Value: brtypes.ToolUseBlock{
+				ToolUseId: aws.String("tool_1"), Name: aws.String("lookup"), Input: brdoc.NewLazyDocument(map[string]any{}),
+			}}}},
+		}},
 		Tools: []ToolDefinition{{
 			Name:        "lookup",
 			Description: ptr("Lookup"),
@@ -479,9 +490,10 @@ func TestBedrockToolResultFiles(t *testing.T) {
 	if runtime.got == nil || len(runtime.got.Messages) == 0 {
 		t.Fatalf("messages = %#v", runtime.got)
 	}
-	result, ok := runtime.got.Messages[0].Content[0].(*brtypes.ContentBlockMemberToolResult)
+	last := runtime.got.Messages[len(runtime.got.Messages)-1]
+	result, ok := last.Content[0].(*brtypes.ContentBlockMemberToolResult)
 	if !ok {
-		t.Fatalf("content = %#v", runtime.got.Messages[0].Content)
+		t.Fatalf("content = %#v", last.Content)
 	}
 	var sawText, sawJSON, sawImage, sawDocument, sawVideo bool
 	for _, block := range result.Value.Content {
@@ -1145,7 +1157,7 @@ func TestBedrockReasoningFinishAndRetryHelpers(t *testing.T) {
 	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberText{Value: "think"}); got != "think" {
 		t.Fatalf("reasoning delta text = %q", got)
 	}
-	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberRedactedContent{Value: []byte("secret")}); got != "[Redacted thinking: secret]" {
+	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberRedactedContent{Value: []byte("secret")}); got != "" {
 		t.Fatalf("reasoning delta redacted = %q", got)
 	}
 	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberSignature{Value: "sig"}); got != "\n\n" {
@@ -1157,7 +1169,7 @@ func TestBedrockReasoningFinishAndRetryHelpers(t *testing.T) {
 	if got := bedrockReasoningContentText(&brtypes.ReasoningContentBlockMemberReasoningText{Value: brtypes.ReasoningTextBlock{Text: aws.String("full"), Signature: aws.String("sig")}}); got != "full\n\n" {
 		t.Fatalf("reasoning signed content = %q", got)
 	}
-	if got := bedrockReasoningContentText(&brtypes.ReasoningContentBlockMemberRedactedContent{Value: []byte("sealed")}); got != "[Redacted thinking: sealed]" {
+	if got := bedrockReasoningContentText(&brtypes.ReasoningContentBlockMemberRedactedContent{Value: []byte("sealed")}); got != "" {
 		t.Fatalf("reasoning redacted content = %q", got)
 	}
 	assertRetryable(t, bedrockRetryable("ThrottlingException", 0, ""), true)
@@ -1320,7 +1332,7 @@ func TestBedrockAdditionalFieldsAndErrorFormatting(t *testing.T) {
 			"include_thoughts": true,
 			"top_k":            10,
 		},
-	})
+	}, false)
 	if additional["top_k"] != nil || additional["output_config"].(map[string]any)["effort"] != "high" {
 		t.Fatalf("adaptive fields = %#v", additional)
 	}
@@ -1331,8 +1343,9 @@ func TestBedrockAdditionalFieldsAndErrorFormatting(t *testing.T) {
 	additional = bedrockAdditionalFields(ExecutionOptions{
 		Model:        "mistral.large",
 		ModelOptions: map[string]any{"top_k": 40, "reasoning_effort": "medium"},
-	})
-	if additional["top_k"] != 40 || additional["reasoning_effort"] != "medium" {
+	}, false)
+	// Mistral Large reads neither field; see TestBedrockFamilyAdditionalFields.
+	if len(additional) != 0 {
 		t.Fatalf("non-Claude fields = %#v", additional)
 	}
 
@@ -1435,8 +1448,14 @@ func (e fakeBedrockAPIError) ErrorMessage() string {
 	return e.message
 }
 
-func (e fakeBedrockAPIError) ErrorFault() string {
-	return e.fault
+func (e fakeBedrockAPIError) ErrorFault() smithy.ErrorFault {
+	switch e.fault {
+	case "server":
+		return smithy.FaultServer
+	case "client":
+		return smithy.FaultClient
+	}
+	return smithy.FaultUnknown
 }
 
 // modalityString returns the embedding output modality, or "" when it is unset.

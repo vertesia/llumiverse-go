@@ -17,6 +17,7 @@ import (
 	bedrockruntime "github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go"
 )
 
 // Bedrock defaults to Nova multimodal embeddings, matching the TypeScript client.
@@ -260,7 +261,9 @@ func (d *BedrockDriver) CreatePrompt(ctx context.Context, segments []PromptSegme
 			}
 		}
 	}
-	if options.ResultSchema != nil {
+	// Families with native structured output get it in the request instead (see
+	// bedrockOutputConfig); the others are guided by the prompt.
+	if options.ResultSchema != nil && bedrockIncludeSchemaInPrompt(options.Model) {
 		schema, _ := json.MarshalIndent(options.ResultSchema, "", "  ")
 		notice := "IMPORTANT: The answer must be a JSON object using the following JSON Schema:\n" + string(schema)
 		if len(options.Tools) > 0 {
@@ -353,6 +356,13 @@ func bedrockFileBlock(ctx context.Context, file DataSource) (brtypes.ContentBloc
 		}
 		return &brtypes.ContentBlockMemberVideo{Value: block}, nil
 	}
+	if strings.HasPrefix(mimeType, "audio/") {
+		block, err := bedrockAudioBlock(ctx, file)
+		if err != nil {
+			return nil, err
+		}
+		return &brtypes.ContentBlockMemberAudio{Value: block}, nil
+	}
 	if strings.HasPrefix(mimeType, "text/") {
 		text, err := readAllStringFromDataSource(ctx, file)
 		if err != nil {
@@ -413,6 +423,9 @@ func bedrockToolResultFileBlock(ctx context.Context, file DataSource) (brtypes.T
 			return nil, err
 		}
 		return &brtypes.ToolResultContentBlockMemberVideo{Value: block}, nil
+	}
+	if strings.HasPrefix(mimeType, "audio/") {
+		return nil, errors.New("bedrock Converse does not support audio blocks in tool results")
 	}
 	text, err := readAllStringFromDataSource(ctx, file)
 	if err != nil {
@@ -628,7 +641,9 @@ func mergeBedrockMessages(messages []brtypes.Message) []brtypes.Message {
 	for _, msg := range messages[1:] {
 		last := &out[len(out)-1]
 		if last.Role == msg.Role {
-			last.Content = append(last.Content, msg.Content...)
+			// Copy before appending so the merged turn never writes into the
+			// content of a message the caller still holds.
+			last.Content = append(append([]brtypes.ContentBlock(nil), last.Content...), msg.Content...)
 		} else {
 			out = append(out, msg)
 		}
@@ -693,9 +708,15 @@ func (d *BedrockDriver) Execute(ctx context.Context, segments []PromptSegment, o
 	return executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
 }
 
-// Stream runs a Bedrock ConverseStream request and emits normalized chunks.
+// Stream runs a Bedrock ConverseStream request and emits normalized chunks. A
+// stream left unread for DriverOptions.StreamStartTimeout is closed, so an
+// abandoned stream releases its connection.
 func (d *BedrockDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	return streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	if err != nil {
+		return nil, err
+	}
+	return leaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // requestTextCompletion issues a single Converse call (or image generation),
@@ -710,13 +731,16 @@ func (d *BedrockDriver) requestTextCompletion(ctx context.Context, prompt any, o
 	}
 	bp := prompt.(bedrockPrompt)
 	bp = bedrockConversationInput(options.Conversation, bp)
-	input := d.converseInput(bp, options)
+	input, err := d.converseInput(bp, options, "execute")
+	if err != nil {
+		return nil, err
+	}
 	output, err := d.runtime.Converse(ctx, input, d.runtimeOptions(options.HTTPTimeout)...)
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
 	}
 	completion := extractBedrockCompletion(output, options)
-	completion.Conversation = finalizeBedrockConversation(appendBedrockResponseToConversation(bp, output), options)
+	completion.Conversation = finalizeBedrockConversation(appendBedrockResponseToConversation(bp, output, options.Model), options)
 	return completion, nil
 }
 
@@ -732,19 +756,25 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 	}
 	bp := prompt.(bedrockPrompt)
 	bp = bedrockConversationInput(options.Conversation, bp)
-	stream, err := d.runtime.ConverseStream(ctx, d.converseStreamInput(bp, options), d.runtimeOptions(options.HTTPTimeout)...)
+	input, err := d.converseStreamInput(bp, options)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := d.runtime.ConverseStream(ctx, input, d.runtimeOptions(options.HTTPTimeout)...)
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "stream")
 	}
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: prompt}
+	native := &bedrockNativeStreamBlocks{}
 	go func() {
 		defer close(ch)
 		defer func() { _ = stream.Close() }()
 		state := bedrockStreamState{toolBlocks: map[int32]bedrockStreamingToolBlock{}}
 		for event := range stream.Events() {
+			native.collect(event)
 			chunk := state.chunk(event, options)
-			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
+			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil || chunk.ServiceTier != "" {
 				ch <- streamItem{Chunk: chunk}
 			}
 		}
@@ -753,42 +783,72 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 		}
 	}()
 	return newChannelStreamWithFinalizer(ch, completion, stream.Close, func(resp *ExecutionResponse) {
-		resp.Conversation = finalizeBedrockConversation(buildBedrockStreamingConversation(bp, &resp.Completion), options)
+		if tier := native.tier(); tier != "" {
+			resp.ServiceTier = tier
+		}
+		// The stored turn replays the provider's own blocks, reasoning included.
+		assistant := brtypes.Message{Role: brtypes.ConversationRoleAssistant, Content: bedrockReplayContent(native.content(), options.Model)}
+		resp.Conversation = finalizeBedrockConversation(appendBedrockAssistantMessage(bp, assistant), options)
 	}), nil
 }
 
 // converseInput builds the Converse request from a prompt and options: messages
 // (downgrading tool blocks to text when no tools are configured), inference
-// config, tools, thinking/effort additional fields, and Claude cache points.
-func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOptions) *bedrockruntime.ConverseInput {
-	messages := prompt.Messages
+// config, tools and tool choice, thinking/effort additional fields, and Claude
+// cache points. It fails when a forced tool choice cannot be enforced.
+func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOptions, operation string) (*bedrockruntime.ConverseInput, error) {
+	toolChoice, err := d.bedrockToolChoice(options, operation)
+	if err != nil {
+		return nil, err
+	}
+	messages := relocateBedrockToolImages(prompt.Messages, options.Model)
 	if len(options.Tools) == 0 && bedrockMessagesContainToolBlocks(messages) {
 		messages = convertBedrockToolBlocksToText(messages)
+	}
+	system := prompt.System
+	if len(system) > 0 && bedrockFoldsSystemPrompt(options.Model) {
+		messages, system = foldBedrockSystemPrompt(messages, system), nil
 	}
 	input := &bedrockruntime.ConverseInput{
 		ModelId:         aws.String(options.Model),
 		Messages:        messages,
-		System:          prompt.System,
-		InferenceConfig: bedrockInferenceConfig(options.ModelOptions),
+		System:          system,
+		InferenceConfig: bedrockInferenceConfig(options.Model, options.ModelOptions),
 		RequestMetadata: options.Labels,
+		OutputConfig:    bedrockOutputConfig(options),
+		ServiceTier:     bedrockServiceTier(options.ModelOptions),
 	}
 	if len(options.Tools) > 0 {
-		input.ToolConfig = &brtypes.ToolConfiguration{Tools: bedrockTools(options.Tools)}
+		input.ToolConfig = &brtypes.ToolConfiguration{Tools: bedrockTools(options.Tools), ToolChoice: toolChoice.choice}
 	}
-	additional := bedrockAdditionalFields(options)
+	additional := bedrockAdditionalFields(options, toolChoice.disableClaudeThinking)
 	if len(additional) > 0 {
 		input.AdditionalModelRequestFields = brdoc.NewLazyDocument(additional)
 	}
 	if strings.Contains(strings.ToLower(options.Model), "claude") {
 		applyBedrockClaudeCache(input, options)
 	}
-	return input
+	return input, nil
+}
+
+// bedrockServiceTier returns the Converse service tier for the service_tier
+// model option, or nil when the caller did not set one. The value is passed
+// through as is, so tiers newer than the SDK enum still reach Bedrock.
+func bedrockServiceTier(options map[string]any) *brtypes.ServiceTier {
+	tier := optionString(options, "service_tier")
+	if tier == "" {
+		return nil
+	}
+	return &brtypes.ServiceTier{Type: brtypes.ServiceTierType(tier)}
 }
 
 // converseStreamInput builds a ConverseStream request by copying the fields of
 // the equivalent Converse request.
-func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options ExecutionOptions) *bedrockruntime.ConverseStreamInput {
-	converse := d.converseInput(prompt, options)
+func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options ExecutionOptions) (*bedrockruntime.ConverseStreamInput, error) {
+	converse, err := d.converseInput(prompt, options, "stream")
+	if err != nil {
+		return nil, err
+	}
 	return &bedrockruntime.ConverseStreamInput{
 		ModelId:                      converse.ModelId,
 		Messages:                     converse.Messages,
@@ -797,7 +857,9 @@ func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options Execut
 		ToolConfig:                   converse.ToolConfig,
 		AdditionalModelRequestFields: converse.AdditionalModelRequestFields,
 		RequestMetadata:              converse.RequestMetadata,
-	}
+		OutputConfig:                 converse.OutputConfig,
+		ServiceTier:                  converse.ServiceTier,
+	}, nil
 }
 
 // bedrockConversationInput merges the new prompt into any prior conversation
@@ -824,7 +886,12 @@ func bedrockConversationInput(conversation any, prompt bedrockPrompt) bedrockPro
 	if len(prompt.System) > 0 {
 		out.System = prompt.System
 	}
-	out.Messages = fixBedrockOrphanedToolUse(mergeBedrockMessages(append(out.Messages, prompt.Messages...)))
+	// Repair both orphan directions: an unanswered toolUse gets a synthetic
+	// result, and a toolResult whose toolUse is gone is dropped. Both compare
+	// adjacent messages, so empty turns (for example one already stored) are
+	// removed first; the final pass merges what the repairs leave adjacent.
+	combined := append(append([]brtypes.Message(nil), out.Messages...), prompt.Messages...)
+	out.Messages = sanitizeBedrockMessages(fixBedrockOrphanedToolResults(fixBedrockOrphanedToolUse(sanitizeBedrockMessages(combined))))
 	return out
 }
 
@@ -945,7 +1012,15 @@ func bedrockStoredContentBlock(raw any) brtypes.ContentBlock {
 			return &brtypes.ContentBlockMemberCachePoint{Value: cache}
 		}
 	}
+	if rawValue, ok := bedrockMapLookup(value, "reasoningContent", "ReasoningContent"); ok {
+		if block, ok := bedrockStoredReasoningBlock(rawValue); ok {
+			return block
+		}
+	}
 	if rawValue, ok := bedrockMapLookup(value, "Value"); ok {
+		if block, ok := bedrockStoredReasoningBlock(rawValue); ok {
+			return block
+		}
 		return bedrockStoredContentBlockValue(rawValue)
 	}
 	return nil
@@ -1144,37 +1219,26 @@ func bedrockIntValue(raw any) (int, bool) {
 }
 
 // appendBedrockResponseToConversation appends the model's response message to
-// the conversation, dropping reasoning blocks (which must not be replayed).
-func appendBedrockResponseToConversation(prompt bedrockPrompt, output *bedrockruntime.ConverseOutput) bedrockPrompt {
+// the conversation. Reasoning blocks are kept for replay (signed chains must be
+// replayed whole), except for models that reject them.
+func appendBedrockResponseToConversation(prompt bedrockPrompt, output *bedrockruntime.ConverseOutput, model string) bedrockPrompt {
 	if output == nil || output.Output == nil {
 		return prompt
 	}
 	if messageOutput, ok := output.Output.(*brtypes.ConverseOutputMemberMessage); ok {
 		msg := messageOutput.Value
-		msg.Content = filterBedrockReasoningBlocks(msg.Content)
-		prompt.Messages = mergeBedrockMessages(append(prompt.Messages, msg))
+		msg.Content = bedrockReplayContent(msg.Content, model)
+		return appendBedrockAssistantMessage(prompt, msg)
 	}
 	return prompt
 }
 
-// buildBedrockStreamingConversation reconstructs the assistant turn from the
-// accumulated streamed completion (text plus tool_use blocks) and appends it to
-// the conversation, since streaming yields no single response message.
-func buildBedrockStreamingConversation(prompt bedrockPrompt, completion *Completion) bedrockPrompt {
-	content := []brtypes.ContentBlock{}
-	if text := completionResultsToText(completion.Result); text != "" {
-		content = append(content, &brtypes.ContentBlockMemberText{Value: text})
-	}
-	for _, tool := range completion.ToolUse {
-		content = append(content, &brtypes.ContentBlockMemberToolUse{Value: brtypes.ToolUseBlock{
-			ToolUseId: aws.String(tool.ID),
-			Name:      aws.String(tool.ToolName),
-			Input:     brdoc.NewLazyDocument(bedrockToolInputDocument(tool.ToolInput)),
-		}})
-	}
-	if len(content) > 0 {
-		prompt.Messages = mergeBedrockMessages(append(prompt.Messages, brtypes.Message{Role: brtypes.ConversationRoleAssistant, Content: content}))
-	}
+// appendBedrockAssistantMessage appends an assistant turn to the conversation.
+// A turn without content, or with only blank text (for example after a
+// content_filtered stop), is not stored: Converse rejects it on every later
+// request.
+func appendBedrockAssistantMessage(prompt bedrockPrompt, message brtypes.Message) bedrockPrompt {
+	prompt.Messages = sanitizeBedrockMessages(append(append([]brtypes.Message(nil), prompt.Messages...), message))
 	return prompt
 }
 
@@ -1378,16 +1442,20 @@ func stripBedrockToolCachePoints(tools []brtypes.Tool) []brtypes.Tool {
 
 // bedrockInferenceConfig maps the generic model options (max_tokens,
 // temperature, top_p, stop_sequence) to a Converse InferenceConfiguration,
-// returning nil when none are set.
-func bedrockInferenceConfig(options map[string]any) *brtypes.InferenceConfiguration {
+// returning nil when none are set. DeepSeek accepts neither stop sequences nor
+// top_p, and models other than GPT 5+ get top_p only when temperature is unset.
+func bedrockInferenceConfig(model string, options map[string]any) *brtypes.InferenceConfiguration {
 	cfg := &brtypes.InferenceConfiguration{}
+	if strings.Contains(strings.ToLower(model), "deepseek") {
+		options = withoutBedrockOptions(options, "stop_sequence", "top_p")
+	}
 	if v := optionInt(options, "max_tokens"); v != nil {
 		cfg.MaxTokens = aws.Int32(int32(*v))
 	}
 	if v := optionFloat(options, "temperature"); v != nil {
 		cfg.Temperature = aws.Float32(float32(*v))
 	}
-	if v := optionFloat(options, "top_p"); v != nil {
+	if v := optionFloat(options, "top_p"); v != nil && (cfg.Temperature == nil || bedrockIsGPT5(model)) {
 		cfg.TopP = aws.Float32(float32(*v))
 	}
 	if stops := optionStringSlice(options, "stop_sequence"); len(stops) > 0 {
@@ -1402,13 +1470,21 @@ func bedrockInferenceConfig(options map[string]any) *brtypes.InferenceConfigurat
 // bedrockAdditionalFields assembles the AdditionalModelRequestFields document.
 // These carry model-specific knobs that Converse does not model directly: Claude
 // thinking/reasoning config (explicit budget vs. adaptive effort vs. disabled,
-// including the 128k output beta for claude-3-7-sonnet), top_k (when thinking is
-// off and the model permits it), and reasoning_effort for non-Claude models.
-func bedrockAdditionalFields(options ExecutionOptions) map[string]any {
-	out := map[string]any{}
+// including the 128k output beta for claude-3-7-sonnet) and top_k (when thinking
+// is off and the model permits it). Other families get their own fields from
+// bedrockFamilyFields.
+func bedrockAdditionalFields(options ExecutionOptions, disableClaudeThinking bool) map[string]any {
 	claude := strings.Contains(strings.ToLower(options.Model), "claude")
+	if !claude {
+		return bedrockFamilyFields(options)
+	}
+	out := map[string]any{}
 	thinkingActive := false
-	if claude && isClaudeVersionGTE(options.Model, 3, 7) {
+	if disableClaudeThinking {
+		// A forced tool turn: Bedrock permits only auto/none tool choice while
+		// thinking is active, so this turn runs without thinking or effort.
+		out["reasoning_config"] = map[string]any{"type": "disabled"}
+	} else if isClaudeVersionGTE(options.Model, 3, 7) {
 		// Claude thinking fields are passed as additional model request fields in
 		// Bedrock Converse, not as normal inference config fields. Explicit budgets
 		// take priority over adaptive effort-based thinking.
@@ -1441,9 +1517,6 @@ func bedrockAdditionalFields(options ExecutionOptions) map[string]any {
 	if v := optionInt(options.ModelOptions, "top_k"); v != nil && !thinkingActive && !claudeHasSamplingParameterRestriction(options.Model) {
 		out["top_k"] = *v
 	}
-	if v, ok := options.ModelOptions["reasoning_effort"].(string); ok && !claude {
-		out["reasoning_effort"] = v
-	}
 	return out
 }
 
@@ -1467,6 +1540,9 @@ func extractBedrockCompletion(output *bedrockruntime.ConverseOutput, options Exe
 	completion := &Completion{
 		TokenUsage:   bedrockUsage(output.Usage),
 		FinishReason: bedrockFinishReason(output.StopReason),
+	}
+	if output.ServiceTier != nil {
+		completion.ServiceTier = string(output.ServiceTier.Type)
 	}
 	if options.IncludeOriginalResponse {
 		completion.OriginalResponse = output
@@ -1505,15 +1581,6 @@ func extractBedrockCompletion(output *bedrockruntime.ConverseOutput, options Exe
 	return completion
 }
 
-// bedrockToolInputDocument returns a tool input as the plain value a Smithy
-// document encodes: the input object as a map, or nil when there is none.
-func bedrockToolInputDocument(input *JSONObject) any {
-	if input == nil {
-		return nil
-	}
-	return map[string]any(*input)
-}
-
 // documentToAny unmarshals a Smithy lazy document into a plain Go value,
 // returning nil on failure.
 func documentToAny(doc brdoc.Interface) any {
@@ -1529,7 +1596,7 @@ func documentToAny(doc brdoc.Interface) any {
 
 // bedrockUsage maps Converse token usage into ExecutionTokenUsage, folding cache
 // read/write tokens into the total prompt count while also exposing them
-// separately.
+// separately, along with the one-hour share of the cache writes.
 func bedrockUsage(usage *brtypes.TokenUsage) *ExecutionTokenUsage {
 	if usage == nil {
 		return nil
@@ -1539,7 +1606,7 @@ func bedrockUsage(usage *brtypes.TokenUsage) *ExecutionTokenUsage {
 	total := int32Value(usage.TotalTokens)
 	cacheRead := int32Value(usage.CacheReadInputTokens)
 	cacheWrite := int32Value(usage.CacheWriteInputTokens)
-	return &ExecutionTokenUsage{
+	out := &ExecutionTokenUsage{
 		Prompt:           tokens(prompt + cacheRead + cacheWrite),
 		PromptNew:        tokens(prompt),
 		Result:           tokens(result),
@@ -1547,6 +1614,18 @@ func bedrockUsage(usage *brtypes.TokenUsage) *ExecutionTokenUsage {
 		PromptCached:     tokens(cacheRead),
 		PromptCacheWrite: tokens(cacheWrite),
 	}
+	// Cache details split the writes by lifetime; those not written for one
+	// hour used the five-minute default.
+	oneHour := 0
+	for _, detail := range usage.CacheDetails {
+		if detail.Ttl == brtypes.CacheTTLOneHour {
+			oneHour += int32Value(detail.InputTokens)
+		}
+	}
+	if oneHour > 0 {
+		out.PromptCacheWrite1H = tokens(oneHour)
+	}
+	return out
 }
 
 func int32Value(v *int32) int {
@@ -1571,7 +1650,7 @@ func bedrockFinishReason(reason brtypes.StopReason) string {
 	switch reason {
 	case brtypes.StopReasonEndTurn:
 		return "stop"
-	case brtypes.StopReasonMaxTokens:
+	case brtypes.StopReasonMaxTokens, brtypes.StopReasonModelContextWindowExceeded:
 		return "length"
 	case brtypes.StopReasonToolUse:
 		return "tool_use"
@@ -1608,7 +1687,11 @@ func (s *bedrockStreamState) chunk(event brtypes.ConverseStreamOutput, options E
 	case *brtypes.ConverseStreamOutputMemberMessageStop:
 		return CompletionChunk{FinishReason: bedrockFinishReason(value.Value.StopReason)}
 	case *brtypes.ConverseStreamOutputMemberMetadata:
-		return CompletionChunk{TokenUsage: bedrockUsage(value.Value.Usage)}
+		chunk := CompletionChunk{TokenUsage: bedrockUsage(value.Value.Usage)}
+		if value.Value.ServiceTier != nil {
+			chunk.ServiceTier = string(value.Value.ServiceTier.Type)
+		}
+		return chunk
 	}
 	return CompletionChunk{}
 }
@@ -1673,14 +1756,12 @@ func bedrockIncludeThoughts(options ExecutionOptions) bool {
 }
 
 // bedrockReasoningDeltaText extracts displayable text from a streamed reasoning
-// delta, rendering redacted content as a placeholder and signatures as a
-// paragraph break.
+// delta, rendering signatures as a paragraph break. Redacted (encrypted)
+// content belongs only in the replayed conversation, never in visible output.
 func bedrockReasoningDeltaText(delta brtypes.ReasoningContentBlockDelta) string {
 	switch value := delta.(type) {
 	case *brtypes.ReasoningContentBlockDeltaMemberText:
 		return value.Value
-	case *brtypes.ReasoningContentBlockDeltaMemberRedactedContent:
-		return "[Redacted thinking: " + string(value.Value) + "]"
 	case *brtypes.ReasoningContentBlockDeltaMemberSignature:
 		return "\n\n"
 	default:
@@ -1690,7 +1771,7 @@ func bedrockReasoningDeltaText(delta brtypes.ReasoningContentBlockDelta) string 
 
 // bedrockReasoningContentText extracts displayable text from a complete
 // reasoning content block, appending a paragraph break when the block carries a
-// signature and rendering redacted content as a placeholder.
+// signature. Redacted content is not displayable and yields nothing.
 func bedrockReasoningContentText(block brtypes.ReasoningContentBlock) string {
 	switch value := block.(type) {
 	case *brtypes.ReasoningContentBlockMemberReasoningText:
@@ -1699,8 +1780,6 @@ func bedrockReasoningContentText(block brtypes.ReasoningContentBlock) string {
 			return text + "\n\n"
 		}
 		return text
-	case *brtypes.ReasoningContentBlockMemberRedactedContent:
-		return "[Redacted thinking: " + string(value.Value) + "]"
 	default:
 		return ""
 	}
@@ -1717,6 +1796,18 @@ func (d *BedrockDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) (
 		return nil, d.formatError(err, "", "listModels")
 	}
 	models := make([]AIModel, 0, len(output.ModelSummaries))
+	// Inference profiles carry no publisher name, so they reuse the display
+	// name the foundation catalog reports for their publisher (for example
+	// "Z.ai" or "Moonshot AI") and are grouped with its other models.
+	publisherNames := map[string]string{}
+	for _, summary := range output.ModelSummaries {
+		name := aws.ToString(summary.ProviderName)
+		if key := bedrockPublisherKey(name); key != "" {
+			if _, ok := publisherNames[key]; !ok {
+				publisherNames[key] = name
+			}
+		}
+	}
 	for _, summary := range output.ModelSummaries {
 		if !bedrockModelSupported(summary) {
 			continue
@@ -1725,12 +1816,14 @@ func (d *BedrockDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) (
 	}
 	if custom, err := d.models.ListCustomModels(ctx, &bedrock.ListCustomModelsInput{}); err == nil {
 		for _, summary := range custom.ModelSummaries {
-			models = append(models, bedrockCustomAIModel(summary))
+			if model, ok := bedrockCustomAIModel(summary); ok {
+				models = append(models, model)
+			}
 		}
 	}
 	if profiles, err := d.models.ListInferenceProfiles(ctx, &bedrock.ListInferenceProfilesInput{}); err == nil {
 		for _, summary := range profiles.InferenceProfileSummaries {
-			if model, ok := bedrockInferenceProfileAIModel(summary); ok {
+			if model, ok := bedrockInferenceProfileAIModel(summary, publisherNames); ok {
 				models = append(models, model)
 			}
 		}
@@ -1784,7 +1877,7 @@ func bedrockFoundationAIModel(summary bedrocktypes.FoundationModelSummary) AIMod
 	}
 	return AIModel{
 		ID:               id,
-		Name:             strings.TrimSpace(aws.ToString(summary.ProviderName) + " " + aws.ToString(summary.ModelName)),
+		Name:             bedrockFoundationModelName(summary),
 		Provider:         string(ProviderBedrock),
 		Owner:            ptr(aws.ToString(summary.ProviderName)),
 		Type:             ptr(ModelType("text")),
@@ -1795,13 +1888,30 @@ func bedrockFoundationAIModel(summary bedrocktypes.FoundationModelSummary) AIMod
 	}
 }
 
-// bedrockCustomAIModel maps a custom model summary to an AIModel, inferring
-// modalities and tool support from the model ID.
-func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) AIModel {
+// bedrockFoundationModelName is the AWS model name, which already names the
+// publisher, falling back to the model ID.
+func bedrockFoundationModelName(summary bedrocktypes.FoundationModelSummary) string {
+	if name := aws.ToString(summary.ModelName); name != "" {
+		return name
+	}
+	return aws.ToString(summary.ModelId)
+}
+
+// bedrockCustomAIModel maps a custom model summary to an AIModel. A custom
+// model's ARN carries a caller-chosen name, so its modalities and tool support
+// come from the base model it reports; custom embedding models are left out.
+func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) (AIModel, bool) {
 	id := aws.ToString(summary.ModelArn)
 	name := aws.ToString(summary.ModelName)
 	if name == "" {
 		name = id
+	}
+	capabilityID := aws.ToString(summary.BaseModelName)
+	if capabilityID == "" {
+		capabilityID = id
+	}
+	if bedrockIsEmbeddingModel(capabilityID) {
+		return AIModel{}, false
 	}
 	return AIModel{
 		ID:               id,
@@ -1811,15 +1921,23 @@ func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) AIModel {
 		Description:      ptr("Custom model from " + aws.ToString(summary.BaseModelName)),
 		Type:             ptr(ModelType("text")),
 		IsCustom:         ptr(true),
-		InputModalities:  ptr(bedrockCapabilitiesInput(id)),
-		OutputModalities: ptr(bedrockCapabilitiesOutput(id)),
-		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
-	}
+		InputModalities:  ptr(bedrockCapabilitiesInput(capabilityID)),
+		OutputModalities: ptr(bedrockCapabilitiesOutput(capabilityID)),
+		ToolSupport:      ptr(bedrockLikelySupportsTools(capabilityID)),
+	}, true
+}
+
+// bedrockIsEmbeddingModel reports whether a model ID names an embedding model.
+func bedrockIsEmbeddingModel(model string) bool {
+	model = strings.ToLower(model)
+	return strings.Contains(model, "embed") || strings.Contains(model, "marengo")
 }
 
 // bedrockInferenceProfileAIModel maps an inference profile to an AIModel,
 // returning false when it lacks an ID or its inferred publisher is unsupported.
-func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary) (AIModel, bool) {
+// The owner is the publisher's display name from publisherNames when known,
+// else its publisher key.
+func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary, publisherNames map[string]string) (AIModel, bool) {
 	id := aws.ToString(summary.InferenceProfileArn)
 	if id == "" {
 		id = aws.ToString(summary.InferenceProfileId)
@@ -1828,18 +1946,22 @@ func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary
 		return AIModel{}, false
 	}
 	provider := bedrockProviderFromProfile(summary)
-	if provider == "" || !bedrockPublisherSupported(provider) {
+	if provider == "" || !bedrockPublisherSupported(provider) || bedrockIsEmbeddingModel(id) {
 		return AIModel{}, false
 	}
 	name := aws.ToString(summary.InferenceProfileName)
 	if name == "" {
 		name = id
 	}
+	owner := provider
+	if display, ok := publisherNames[provider]; ok {
+		owner = display
+	}
 	return AIModel{
 		ID:               id,
 		Name:             name,
 		Provider:         string(ProviderBedrock),
-		Owner:            ptr(provider),
+		Owner:            ptr(owner),
 		Type:             ptr(ModelType("text")),
 		InputModalities:  ptr(bedrockCapabilitiesInput(id)),
 		OutputModalities: ptr(bedrockCapabilitiesOutput(id)),
@@ -1865,27 +1987,52 @@ func bedrockProviderFromProfile(summary bedrocktypes.InferenceProfileSummary) st
 // bedrockPublisherSupported reports whether a provider name contains a supported
 // publisher token.
 func bedrockPublisherSupported(provider string) bool {
-	normalized := strings.ToLower(provider)
+	return bedrockPublisherKey(provider) != ""
+}
+
+// bedrockPublisherKey returns the supported publisher token a provider name
+// contains, or "". Punctuation is ignored so display names such as "Z.AI"
+// match the "zai" token.
+func bedrockPublisherKey(provider string) string {
+	normalized := bedrockNormalizePublisher(provider)
 	for _, supported := range bedrockSupportedPublishers() {
 		if strings.Contains(normalized, supported) {
-			return true
+			return supported
 		}
 	}
-	return false
+	return ""
+}
+
+// bedrockNormalizePublisher lowercases a publisher name and drops everything
+// but letters and digits.
+func bedrockNormalizePublisher(provider string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(provider) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }
 
 // bedrockSupportedPublishers lists the model publishers this driver exposes.
+// It is a publisher allow-list, as in the TS client: Bedrock publishers use
+// incompatible invocation schemas, so a publisher is added once its Converse
+// path is verified, and its future models are listed without further changes.
 func bedrockSupportedPublishers() []string {
-	return []string{"amazon", "anthropic", "cohere", "ai21", "mistral", "meta", "deepseek", "writer", "openai", "twelvelabs", "qwen"}
+	return []string{"amazon", "anthropic", "cohere", "ai21", "mistral", "meta", "deepseek", "writer", "openai", "twelvelabs", "qwen",
+		"google", "minimax", "moonshot", "moonshotai", "nvidia", "zai", "xai"}
 }
 
 // bedrockUnsupportedModels returns model-id substrings to exclude for a given
 // publisher (e.g. image/video/audio/rerank/embed variants not served here).
 func bedrockUnsupportedModels(provider string) []string {
-	normalized := strings.ToLower(provider)
+	normalized := bedrockNormalizePublisher(provider)
 	switch {
 	case strings.Contains(normalized, "amazon"):
-		return []string{"titan-image-generator", "nova-reel", "nova-sonic", "rerank"}
+		// Sonic, in every generation (nova-sonic, nova-2-sonic, ...), is a
+		// bidirectional speech-to-speech stream, not Converse.
+		return []string{"titan-image-generator", "nova-reel", "sonic", "rerank"}
 	case strings.Contains(normalized, "cohere"):
 		return []string{"rerank", "embed"}
 	case strings.Contains(normalized, "twelvelabs"):
@@ -1906,6 +2053,8 @@ func bedrockModalities(modalities []bedrocktypes.ModelModality) []string {
 			out = append(out, "image")
 		case bedrocktypes.ModelModalityEmbedding:
 			out = append(out, "embedding")
+		case "SPEECH":
+			out = append(out, "audio")
 		default:
 			out = append(out, strings.ToLower(string(modality)))
 		}
@@ -2484,28 +2633,55 @@ func (d *BedrockDriver) requestBedrockImageGeneration(ctx context.Context, promp
 		return nil, d.formatError(err, options.Model, "execute")
 	}
 	var response struct {
-		Images []string `json:"images"`
-		Error  any      `json:"error"`
+		Images []any `json:"images"`
+		Error  any   `json:"error"`
 	}
 	if err := json.Unmarshal(output.Body, &response); err != nil {
 		return nil, err
 	}
+	// Blank or non-string entries are not images; usable ones are kept even
+	// when the model also reports an error (for example a filtered image).
 	results := make([]CompletionResult, 0, len(response.Images))
-	for _, image := range response.Images {
-		value := image
-		if !strings.HasPrefix(value, "data:") {
-			value = "data:image/png;base64," + value
+	for _, entry := range response.Images {
+		image, ok := entry.(string)
+		if !ok || strings.TrimSpace(image) == "" {
+			continue
 		}
-		results = append(results, newImageResult(value))
+		if !strings.HasPrefix(image, "data:") {
+			image = "data:image/png;base64," + image
+		}
+		results = append(results, newImageResult(image))
 	}
 	completion := &Completion{Result: results}
-	if response.Error != nil {
-		completion.Error = &ResultValidationError{Code: "bedrock_image_error", Message: toolInputString(response.Error), Data: results}
+	if message := bedrockImageErrorMessage(response.Error); message != "" {
+		completion.Error = &ResultValidationError{Code: "content_policy_violation", Message: message}
+	} else if len(results) == 0 {
+		completion.Error = &ResultValidationError{Code: "validation_error", Message: "No images returned by " + bedrockImageModelLabel(options.Model)}
 	}
 	if options.IncludeOriginalResponse {
 		completion.OriginalResponse = response
 	}
 	return completion, nil
+}
+
+// bedrockImageErrorMessage returns the error an image model reported, or "".
+func bedrockImageErrorMessage(value any) string {
+	switch value := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(value)
+	default:
+		return toolInputString(value)
+	}
+}
+
+// bedrockImageModelLabel names an image model in an empty-output error.
+func bedrockImageModelLabel(model string) string {
+	if strings.Contains(strings.ToLower(model), "nova-canvas") {
+		return "Nova Canvas"
+	}
+	return model
 }
 
 // bedrockImagePayload builds the InvokeModel body for an image model, choosing
@@ -2651,21 +2827,46 @@ func isBedrockImageModel(model string) bool {
 }
 
 // formatError wraps an AWS API error as a LlumiverseError with provider/model/
-// operation context and a computed retryable flag; non-API errors pass through.
+// operation context, the HTTP status as its code and a computed retryable flag;
+// non-API errors pass through. The message names the exception, the status and
+// the request ID, as in "[bedrock] Name: [400] message (Request ID: id)", so a
+// caller can tell rejected credentials or a missing permission apart.
 func (d *BedrockDriver) formatError(err error, model string, operation string) error {
-	var apiErr interface {
-		ErrorCode() string
-		ErrorMessage() string
-		ErrorFault() string
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return err
 	}
-	if errors.As(err, &apiErr) {
-		return newLlumiverseError(apiErr.ErrorMessage(), bedrockRetryable(apiErr.ErrorCode(), 0, apiErr.ErrorFault()), LlumiverseErrorContext{
-			Provider:  ProviderBedrock,
-			Model:     model,
-			Operation: operation,
-		}, err, 0, apiErr.ErrorCode())
+	status := 0
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) {
+		status = statusErr.HTTPStatusCode()
 	}
-	return err
+	requestID := ""
+	var requestErr interface{ ServiceRequestID() string }
+	if errors.As(err, &requestErr) {
+		requestID = requestErr.ServiceRequestID()
+	}
+	name := apiErr.ErrorCode()
+	return newLlumiverseError(bedrockErrorMessage(name, status, apiErr.ErrorMessage(), requestID), bedrockRetryable(name, status, apiErr.ErrorFault().String()), LlumiverseErrorContext{
+		Provider:  ProviderBedrock,
+		Model:     model,
+		Operation: operation,
+	}, err, status, name)
+}
+
+// bedrockErrorMessage formats a Bedrock API error message as the TS client does.
+func bedrockErrorMessage(name string, status int, message string, requestID string) string {
+	text := message
+	if status != 0 {
+		text = fmt.Sprintf("[%d] %s", status, text)
+	}
+	if name != "" && name != "Error" && name != "UnknownError" {
+		text = name + ": " + text
+	}
+	if requestID != "" {
+		text += " (Request ID: " + requestID + ")"
+	}
+	return text
 }
 
 // bedrockRetryable decides whether a Bedrock error is retryable from its
