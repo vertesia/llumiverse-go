@@ -263,3 +263,39 @@ func TestChannelStreamReassemblesThoughtSignature(t *testing.T) {
 		}
 	})
 }
+
+// Mirrors the TS client's "streams visible thoughts before the answer while preserving typed
+// results" test, and its media-boundary checks.
+func TestChannelStreamKeepsThoughtsTypedAndMediaDiscrete(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan StreamItem, 6)
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewThoughtsResult("reason-")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewThoughtsResult("one")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewTextResult("answer-one")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewVideoResult("gs://bucket/one.mp4")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewVideoResult("gs://bucket/two.mp4")}, FinishReason: "stop"}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	result := stream.Completion().Result
+	want := []struct{ kind, value string }{
+		{ResultTypeThoughts, "reason-one"},
+		{ResultTypeText, "answer-one"},
+		{ResultTypeVideo, "gs://bucket/one.mp4"},
+		{ResultTypeVideo, "gs://bucket/two.mp4"},
+	}
+	if len(result) != len(want) {
+		t.Fatalf("Result = %#v", result)
+	}
+	for i, w := range want {
+		if result[i].Type() != w.kind || result[i].String() != w.value {
+			t.Fatalf("Result[%d] = %s %q, want %s %q", i, result[i].Type(), result[i].String(), w.kind, w.value)
+		}
+	}
+	if text := CompletionResultsToText(result); text != "answer-one" {
+		t.Fatalf("answer text = %q, thoughts must not leak into it", text)
+	}
+}

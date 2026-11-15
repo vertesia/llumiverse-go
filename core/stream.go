@@ -224,8 +224,9 @@ func (s *channelStream) finalizeCompletion() {
 }
 
 // mergeStreamResults appends src result deltas onto dst, coalescing consecutive
-// same-type items: text values are concatenated and JSON object values are
-// merged key-by-key, so streamed fragments collapse into a single result item.
+// same-type items: text and thoughts values are concatenated and JSON object
+// values are merged key-by-key, so streamed fragments collapse into a single
+// result item. Media results (image, video, audio) keep their boundaries.
 func mergeStreamResults(dst []CompletionResult, src []CompletionResult) []CompletionResult {
 	for _, result := range src {
 		if len(dst) == 0 {
@@ -236,6 +237,12 @@ func mergeStreamResults(dst []CompletionResult, src []CompletionResult) []Comple
 		kind := result.Type()
 		if last.Type() == kind && kind == ResultTypeText {
 			*last = NewTextResult(last.String() + result.String())
+			continue
+		}
+		// Thoughts stay a separate typed result, never merged into the answer
+		// text, but their own fragments collapse like text.
+		if last.Type() == kind && kind == ResultTypeThoughts {
+			*last = NewThoughtsResult(last.String() + result.String())
 			continue
 		}
 		if last.Type() == kind && kind == ResultTypeJSON {
