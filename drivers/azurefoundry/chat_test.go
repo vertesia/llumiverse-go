@@ -9,9 +9,30 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vertesia/llumiverse-go/common"
+	"github.com/vertesia/llumiverse-go/core"
 )
+
+func TestChatStreamIsLeasedUntilConsumed(t *testing.T) {
+	t.Parallel()
+	f := newFakeAzure(t)
+	f.respond = func(w http.ResponseWriter, r recordedRequest) bool {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, `data: {"choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}`+"\n\ndata: [DONE]\n\n")
+		return true
+	}
+	driver := newKeyDriver(t, f, func(o *AzureFoundryOptions) { o.StreamStartTimeout = 20 * time.Millisecond })
+	stream, err := driver.Stream(context.Background(), helloSegments, ExecutionOptions{Model: "llama::llama"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if _, err := stream.Recv(); !errors.Is(err, core.ErrCompletionStreamNotConsumed) {
+		t.Fatalf("Recv error = %v", err)
+	}
+}
 
 func TestChatPayloadOptionsAndToolCalls(t *testing.T) {
 	t.Parallel()

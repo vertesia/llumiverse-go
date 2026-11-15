@@ -325,7 +325,12 @@ func (d *AzureFoundryDriver) Stream(ctx context.Context, segments []PromptSegmen
 	case r.protocol == protocolResponses:
 		return d.inference.Stream(ctx, segments, d.openAIOptions(r, options))
 	}
-	return streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	// The shared OpenAI driver leases its own streams; these are this driver's.
+	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	if err != nil {
+		return nil, err
+	}
+	return leaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // requestTextCompletion serves the Claude and Chat Completions prompts.

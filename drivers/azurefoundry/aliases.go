@@ -88,6 +88,9 @@ var (
 	newTextResult                     = core.NewTextResult
 	newThoughtsResult                 = core.NewThoughtsResult
 	toolInputObject                   = core.ToolInputObject
+	isCutOffFinishReason              = core.IsCutOffFinishReason
+	isJSONObjectText                  = core.IsJSONObjectText
+	leaseCompletionStream             = core.LeaseCompletionStream
 	tokens                            = core.Tokens
 	boolPtr                           = common.BoolPtr
 	newLlumiverseError                = common.NewLlumiverseError

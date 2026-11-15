@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/vertesia/llumiverse-go/drivers/openai"
 )
@@ -720,29 +721,18 @@ func reasoningText(message *chatResponseMessage) string {
 	return ""
 }
 
-// chatFinishReason normalizes a finish reason. Length and content-filter stops
-// are kept even with a partial tool call, so the incomplete call is dropped
-// rather than reported as malformed.
+// chatFinishReason normalizes a finish reason to the lowercase shared values.
+// Cut-off stops (length, content_filter, ...) are kept even with a partial tool
+// call, so core drops the incomplete call rather than reporting it as malformed.
 func chatFinishReason(reason string, toolUse bool) string {
 	reason = strings.ToLower(reason)
 	switch {
-	case reason == "length" || reason == "content_filter":
+	case isCutOffFinishReason(reason):
 		return reason
 	case toolUse || reason == "tool_calls" || reason == "function_call":
 		return "tool_use"
 	}
 	return reason
-}
-
-func isCutOff(reason string) bool {
-	reason = strings.ToLower(reason)
-	return reason == "length" || reason == "content_filter"
-}
-
-// isJSONObjectText reports whether value is a complete JSON object.
-func isJSONObjectText(value string) bool {
-	var object map[string]any
-	return json.Unmarshal([]byte(value), &object) == nil
 }
 
 // toolInputFromArguments parses tool arguments, keeping only a JSON object.
@@ -789,7 +779,7 @@ func (d *AzureFoundryDriver) requestChat(ctx context.Context, prompt chatPrompt,
 	calls := functionCalls(message.ToolCalls)
 	// A cut-off stop may have ended inside the last tool call: leave it out when
 	// its arguments are not complete JSON rather than invent empty input.
-	cutOff := isCutOff(choice.FinishReason)
+	cutOff := isCutOffFinishReason(strings.ToLower(choice.FinishReason))
 	if cutOff && len(calls) > 0 && !isJSONObjectText(calls[len(calls)-1].Function.Arguments) {
 		calls = calls[:len(calls)-1]
 	}
@@ -1114,6 +1104,9 @@ func (d *AzureFoundryDriver) streamChat(ctx context.Context, prompt chatPrompt, 
 	}
 	thoughts := includeThoughts(options)
 	state := &chatStreamState{calls: map[int]*chatToolCall{}, keys: map[int]string{}}
+	// A Close before the end (the caller's, or the stream lease's) runs the
+	// finalizer while the reader may still be updating state.
+	var stateMu sync.Mutex
 	ch, send, closeFn := newStreamChannel(body)
 	go func() {
 		defer close(ch)
@@ -1129,7 +1122,10 @@ func (d *AzureFoundryDriver) streamChat(ctx context.Context, prompt chatPrompt, 
 			if err := json.Unmarshal([]byte(data), &decoded); err != nil {
 				return err
 			}
-			if chunk := state.chunk(decoded, thoughts); hasChunkContent(chunk) && !send(streamItem{Chunk: chunk}) {
+			stateMu.Lock()
+			chunk := state.chunk(decoded, thoughts)
+			stateMu.Unlock()
+			if hasChunkContent(chunk) && !send(streamItem{Chunk: chunk}) {
 				return errStreamClosed
 			}
 			return nil
@@ -1140,6 +1136,8 @@ func (d *AzureFoundryDriver) streamChat(ctx context.Context, prompt chatPrompt, 
 	}()
 	completion := &ExecutionResponse{Prompt: prompt}
 	return newChannelStreamWithFinalizer(ch, completion, closeFn, func(resp *ExecutionResponse) {
+		stateMu.Lock()
+		defer stateMu.Unlock()
 		assistant := state.assistantMessage()
 		// Tool calls whose ID arrived after their first fragment were keyed by index.
 		for i, tool := range resp.ToolUse {
