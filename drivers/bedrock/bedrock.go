@@ -2606,28 +2606,55 @@ func (d *BedrockDriver) requestBedrockImageGeneration(ctx context.Context, promp
 		return nil, d.formatError(err, options.Model, "execute")
 	}
 	var response struct {
-		Images []string `json:"images"`
-		Error  any      `json:"error"`
+		Images []any `json:"images"`
+		Error  any   `json:"error"`
 	}
 	if err := json.Unmarshal(output.Body, &response); err != nil {
 		return nil, err
 	}
+	// Blank or non-string entries are not images; usable ones are kept even
+	// when the model also reports an error (for example a filtered image).
 	results := make([]CompletionResult, 0, len(response.Images))
-	for _, image := range response.Images {
-		value := image
-		if !strings.HasPrefix(value, "data:") {
-			value = "data:image/png;base64," + value
+	for _, entry := range response.Images {
+		image, ok := entry.(string)
+		if !ok || strings.TrimSpace(image) == "" {
+			continue
 		}
-		results = append(results, newImageResult(value))
+		if !strings.HasPrefix(image, "data:") {
+			image = "data:image/png;base64," + image
+		}
+		results = append(results, newImageResult(image))
 	}
 	completion := &Completion{Result: results}
-	if response.Error != nil {
-		completion.Error = &ResultValidationError{Code: "bedrock_image_error", Message: toolInputString(response.Error), Data: results}
+	if message := bedrockImageErrorMessage(response.Error); message != "" {
+		completion.Error = &ResultValidationError{Code: "content_policy_violation", Message: message}
+	} else if len(results) == 0 {
+		completion.Error = &ResultValidationError{Code: "validation_error", Message: "No images returned by " + bedrockImageModelLabel(options.Model)}
 	}
 	if options.IncludeOriginalResponse {
 		completion.OriginalResponse = response
 	}
 	return completion, nil
+}
+
+// bedrockImageErrorMessage returns the error an image model reported, or "".
+func bedrockImageErrorMessage(value any) string {
+	switch value := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(value)
+	default:
+		return toolInputString(value)
+	}
+}
+
+// bedrockImageModelLabel names an image model in an empty-output error.
+func bedrockImageModelLabel(model string) string {
+	if strings.Contains(strings.ToLower(model), "nova-canvas") {
+		return "Nova Canvas"
+	}
+	return model
 }
 
 // bedrockImagePayload builds the InvokeModel body for an image model, choosing
