@@ -314,12 +314,16 @@ type responsesOutputContent struct {
 	Refusal string `json:"refusal"`
 }
 
-// responsesUsage is the usage block of a Responses API response.
+// responsesUsage is the usage block of a Responses API response, plus the fields
+// some OpenAI-compatible Responses endpoints report instead (prompt_tokens_details,
+// cached_tokens).
 type responsesUsage struct {
-	InputTokens        int64                    `json:"input_tokens"`
-	OutputTokens       int64                    `json:"output_tokens"`
-	TotalTokens        int64                    `json:"total_tokens"`
-	InputTokensDetails *responsesInputTokenInfo `json:"input_tokens_details"`
+	InputTokens         int64                    `json:"input_tokens"`
+	OutputTokens        int64                    `json:"output_tokens"`
+	TotalTokens         int64                    `json:"total_tokens"`
+	InputTokensDetails  *responsesInputTokenInfo `json:"input_tokens_details"`
+	PromptTokensDetails *responsesInputTokenInfo `json:"prompt_tokens_details"`
+	CachedTokens        *int64                   `json:"cached_tokens"`
 }
 
 // responsesInputTokenInfo details the input tokens of a response.
@@ -398,8 +402,13 @@ func openAIResponseUsage(usage *responsesUsage) *ExecutionTokenUsage {
 		return nil
 	}
 	var cached int64
-	if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens != nil {
+	switch {
+	case usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens != nil:
 		cached = *usage.InputTokensDetails.CachedTokens
+	case usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil:
+		cached = *usage.PromptTokensDetails.CachedTokens
+	case usage.CachedTokens != nil:
+		cached = *usage.CachedTokens
 	}
 	return openAIUsage(usage.InputTokens, usage.OutputTokens, usage.TotalTokens, cached)
 }
