@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -17,7 +17,6 @@ import (
 )
 
 const vertexScopeCloudPlatform = "https://www.googleapis.com/auth/cloud-platform"
-const vertexAnthropicVersion = "vertex-2023-10-16"
 
 // Gemini Enterprise Agent Platform embeddings default to gemini-embedding-2 to match the TypeScript client.
 const defaultVertexEmbeddingModel = "gemini-embedding-2"
@@ -38,6 +37,12 @@ type VertexAIOptions struct {
 	TokenSource oauth2.TokenSource
 	// HTTPClient overrides the default HTTP client.
 	HTTPClient *http.Client
+	// DisableGeminiContextCache turns off explicit Vertex context caching, which
+	// otherwise runs for Gemini executions that set PromptCacheKey.
+	DisableGeminiContextCache bool
+	// GeminiContextCacheTTLSeconds is the lifetime of a Gemini cachedContents
+	// resource when the execution sets no PromptCacheTTLSeconds (default 1800).
+	GeminiContextCacheTTLSeconds int
 }
 
 // VertexAIDriver implements Driver for Gemini Enterprise Agent Platform Gemini,
@@ -46,6 +51,8 @@ type VertexAIOptions struct {
 type VertexAIDriver struct {
 	options VertexAIOptions
 	client  *http.Client
+	// contextCache memoizes Gemini cachedContents resources; nil when disabled.
+	contextCache *geminiContextCacheManager
 }
 
 // NewVertexAIDriver creates a Gemini Enterprise Agent Platform driver using the supplied token source or ADC.
@@ -62,7 +69,11 @@ func NewVertexAIDriver(options VertexAIOptions) (*VertexAIDriver, error) {
 	} else if hasHTTPTimeout(options.HTTPTimeout) {
 		client = newHTTPClient(client, options.HTTPTimeout)
 	}
-	return &VertexAIDriver{options: options, client: client}, nil
+	driver := &VertexAIDriver{options: options, client: client}
+	if !options.DisableGeminiContextCache {
+		driver.contextCache = newGeminiContextCacheManager(options.GeminiContextCacheTTLSeconds)
+	}
+	return driver, nil
 }
 
 // Provider returns ProviderVertexAI, the stable provider ID retained for the
@@ -97,6 +108,23 @@ type geminiPart struct {
 	FunctionCall     *geminiFunctionCall   `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResult `json:"functionResponse,omitempty"`
 	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
+	// Thought marks a thought-summary part; it is sent back unchanged so the
+	// model's reasoning chain stays intact.
+	Thought bool `json:"thought,omitempty"`
+}
+
+// MarshalJSON always emits a text field on a part that carries no other data, so
+// an empty signed terminal part (text "" plus a thought signature) keeps the
+// data field Gemini requires.
+func (p geminiPart) MarshalJSON() ([]byte, error) {
+	type plain geminiPart
+	if p.InlineData != nil || p.FileData != nil || p.FunctionCall != nil || p.FunctionResponse != nil || p.Text != "" {
+		return json.Marshal(plain(p))
+	}
+	return json.Marshal(struct {
+		Text string `json:"text"`
+		plain
+	}{Text: p.Text, plain: plain(p)})
 }
 
 // geminiInlineData carries base64-encoded media embedded directly in the request.
@@ -111,16 +139,29 @@ type geminiFileData struct {
 	FileURI  string `json:"fileUri"`
 }
 
-// geminiFunctionCall is a tool invocation emitted by the model.
+// geminiFunctionCall is a tool invocation emitted by the model. ID is unique within
+// the conversation (see assignGeminiFunctionCallIDs).
 type geminiFunctionCall struct {
+	ID   string `json:"id,omitempty"`
 	Name string `json:"name"`
 	Args any    `json:"args,omitempty"`
 }
 
-// geminiFunctionResult is the caller-supplied result for a prior function call.
+// geminiFunctionResult is the caller-supplied result for a prior function call. ID
+// echoes the call id when the call has one; Parts carries media attached to the
+// tool result.
 type geminiFunctionResult struct {
-	Name     string         `json:"name"`
-	Response map[string]any `json:"response"`
+	ID       string                    `json:"id,omitempty"`
+	Name     string                    `json:"name"`
+	Response map[string]any            `json:"response"`
+	Parts    []geminiFunctionMediaPart `json:"parts,omitempty"`
+}
+
+// geminiFunctionMediaPart is a media attachment of a function response, passed by
+// URI for Cloud Storage objects and inlined otherwise.
+type geminiFunctionMediaPart struct {
+	InlineData *geminiInlineData `json:"inlineData,omitempty"`
+	FileData   *geminiFileData   `json:"fileData,omitempty"`
 }
 
 // vertexImagenPrompt is the Imagen predict instance: a text prompt plus optional
@@ -135,11 +176,24 @@ type vertexImagenPrompt struct {
 // models get an Imagen predict prompt, Claude partner models reuse the shared
 // Claude prompt format, and everything else is formatted as a Gemini prompt.
 func (d *VertexAIDriver) CreatePrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (any, error) {
+	if isGeminiOmniVideoModel(options.Model) {
+		return formatOmniVideoPrompt(ctx, segments, options)
+	}
 	if isVertexImagenModel(options.Model) {
 		return formatVertexImagenPrompt(ctx, segments, options)
 	}
 	if isClaudeModel(options.Model) {
-		return internalclaude.FormatPrompt(ctx, segments, options)
+		// Claude path in claude.go: the result schema stays out of the prompt when it is sent natively.
+		return d.createVertexClaudePrompt(ctx, segments, options)
+	}
+	// Open MaaS models use the OpenAI Chat Completions endpoint (maas.go).
+	if route, ok := vertexMaaSRoute(options.Model); ok {
+		return d.createMaaSPrompt(ctx, route, segments, options)
+	}
+	if isGeminiFileAudioModel(options.Model) {
+		if err := validateGeminiFileAudioPrompt(segments, options); err != nil {
+			return nil, err
+		}
 	}
 	return d.formatGeminiPrompt(ctx, segments, options)
 }
@@ -153,6 +207,8 @@ func (d *VertexAIDriver) CreatePrompt(ctx context.Context, segments []PromptSegm
 func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (geminiPrompt, error) {
 	prompt := geminiPrompt{System: &geminiContent{Role: "user"}}
 	var safety []geminiContent
+	callNamesByID := geminiFunctionCallNamesByID(geminiStoredContents(options.Conversation))
+	budget := newGeminiInlineBudget(options.Conversation)
 	for _, segment := range segments {
 		switch segment.Role {
 		case PromptRoleNegative, PromptRoleMask:
@@ -170,12 +226,25 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 			}
 			// Gemini thinking models require the thoughtSignature that arrived
 			// with the tool call to be echoed on the matching functionResponse.
+			// Media attached to a tool result (an image the tool rendered, for
+			// example) travels as functionResponse parts, so the model sees it.
+			var responseParts []geminiFunctionMediaPart
+			for _, file := range segment.Files {
+				part, err := geminiMediaPart(ctx, file, budget)
+				if err != nil {
+					return geminiPrompt{}, err
+				}
+				responseParts = append(responseParts, part)
+			}
+			id, name := resolveGeminiFunctionResponseTarget(segment.ToolUseID, callNamesByID)
 			prompt.Contents = append(prompt.Contents, geminiContent{
 				Role: "user",
 				Parts: []geminiPart{{
 					FunctionResponse: &geminiFunctionResult{
-						Name:     segment.ToolUseID,
+						ID:       id,
+						Name:     name,
 						Response: formatGeminiFunctionResponse(segment.Content),
+						Parts:    responseParts,
 					},
 					ThoughtSignature: segment.ThoughtSignature,
 				}},
@@ -186,7 +255,7 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 				parts = append(parts, geminiPart{Text: segment.Content})
 			}
 			for _, file := range segment.Files {
-				part, err := d.geminiFilePart(ctx, file)
+				part, err := d.geminiFilePart(ctx, file, budget)
 				if err != nil {
 					return geminiPrompt{}, err
 				}
@@ -219,23 +288,22 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 	if len(prompt.System.Parts) == 0 {
 		prompt.System = nil
 	}
-	// Safety messages are appended at the end, then adjacent roles are merged to
-	// keep the same conversation shape as the TS driver.
-	prompt.Contents = mergeGeminiRoles(append(prompt.Contents, safety...))
+	// Safety messages are appended at the end. Segment boundaries are kept, as in the
+	// TS driver: they are explicit-cache breakpoints and the caller's turn shape.
+	// Split tool results are recombined when the request is built.
+	prompt.Contents = append(prompt.Contents, safety...)
 	return prompt, nil
 }
 
 // geminiFilePart turns a file into a part: a GCS URL is passed through as
-// fileData (kept in storage), otherwise the bytes are inlined as base64 inlineData.
-func (d *VertexAIDriver) geminiFilePart(ctx context.Context, file DataSource) (geminiPart, error) {
-	if uri, err := file.URL(ctx); err == nil && isVertexGCSURL(uri) {
-		return geminiPart{FileData: &geminiFileData{FileURI: uri, MIMEType: file.MIMEType()}}, nil
-	}
-	data, err := dataSourceToBase64(ctx, file)
+// fileData (kept in storage), otherwise the bytes are inlined as base64
+// inlineData within the request's inline budget.
+func (d *VertexAIDriver) geminiFilePart(ctx context.Context, file DataSource, budget *geminiInlineBudget) (geminiPart, error) {
+	media, err := geminiMediaPart(ctx, file, budget)
 	if err != nil {
 		return geminiPart{}, err
 	}
-	return geminiPart{InlineData: &geminiInlineData{Data: data, MIMEType: file.MIMEType()}}, nil
+	return geminiPart{InlineData: media.InlineData, FileData: media.FileData}, nil
 }
 
 // isVertexGCSURL reports whether a URI points at Google Cloud Storage and can be
@@ -246,24 +314,6 @@ func isVertexGCSURL(uri string) bool {
 	return strings.HasPrefix(uri, "gs://") ||
 		strings.HasPrefix(uri, "https://storage.googleapis.com/") ||
 		strings.HasPrefix(uri, "https://storage.cloud.google.com/")
-}
-
-// mergeGeminiRoles collapses consecutive turns that share a role into one turn,
-// concatenating their parts, matching the conversation shape the TS driver produces.
-func mergeGeminiRoles(contents []geminiContent) []geminiContent {
-	if len(contents) < 2 {
-		return contents
-	}
-	out := []geminiContent{contents[0]}
-	for _, content := range contents[1:] {
-		last := &out[len(out)-1]
-		if last.Role == content.Role {
-			last.Parts = append(last.Parts, content.Parts...)
-		} else {
-			out = append(out, content)
-		}
-	}
-	return out
 }
 
 // formatGeminiFunctionResponse normalizes a tool result string into the object
@@ -280,76 +330,6 @@ func formatGeminiFunctionResponse(response string) map[string]any {
 	return map[string]any{"output": response}
 }
 
-// formatVertexImagenPrompt assembles an Imagen request: system/user/safety text is
-// joined into the prompt, negative segments become the negativePrompt, and image
-// files become reference images. With mask_mode MASK_MODE_USER_PROVIDED a mask
-// segment becomes a REFERENCE_TYPE_MASK reference; otherwise images are
-// REFERENCE_TYPE_RAW.
-func formatVertexImagenPrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (vertexImagenPrompt, error) {
-	var system []string
-	var user []string
-	var safety []string
-	var negative []string
-	prompt := vertexImagenPrompt{}
-	maskMode := optionString(options.ModelOptions, "mask_mode")
-	for _, segment := range segments {
-		switch segment.Role {
-		case PromptRoleSystem:
-			if segment.Content != "" {
-				system = append(system, segment.Content)
-			}
-		case PromptRoleSafety:
-			if segment.Content != "" {
-				safety = append(safety, segment.Content)
-			}
-		case PromptRoleNegative:
-			if segment.Content != "" {
-				negative = append(negative, segment.Content)
-			}
-		default:
-			if segment.Content != "" {
-				user = append(user, segment.Content)
-			}
-		}
-		for _, file := range segment.Files {
-			if !strings.HasPrefix(file.MIMEType(), "image/") {
-				continue
-			}
-			encoded, err := dataSourceToBase64(ctx, file)
-			if err != nil {
-				return vertexImagenPrompt{}, err
-			}
-			refID := len(prompt.ReferenceImages) + 1
-			if segment.Role == PromptRoleMask && maskMode == "MASK_MODE_USER_PROVIDED" {
-				prompt.ReferenceImages = append(prompt.ReferenceImages, map[string]any{
-					"referenceType":  "REFERENCE_TYPE_MASK",
-					"referenceId":    refID,
-					"referenceImage": map[string]any{"bytesBase64Encoded": encoded},
-					"maskImageConfig": map[string]any{
-						"maskMode": maskMode,
-						"dilation": optionFloatValue(options.ModelOptions, "mask_dilation"),
-					},
-				})
-				continue
-			}
-			prompt.ReferenceImages = append(prompt.ReferenceImages, map[string]any{
-				"referenceType":  "REFERENCE_TYPE_RAW",
-				"referenceId":    refID,
-				"referenceImage": map[string]any{"bytesBase64Encoded": encoded},
-			})
-		}
-	}
-	prompt.Prompt = strings.TrimSpace(strings.Join([]string{
-		strings.Join(system, "\n\n"),
-		strings.Join(user, "\n\n"),
-		strings.Join(safety, "\n\n"),
-	}, "\n\n"))
-	if len(negative) > 0 {
-		prompt.NegativePrompt = strings.Join(negative, ", ")
-	}
-	return prompt, nil
-}
-
 func optionFloatValue(options map[string]any, key string) any {
 	if v := optionFloat(options, key); v != nil {
 		return *v
@@ -360,199 +340,63 @@ func optionFloatValue(options map[string]any, key string) any {
 // Execute runs a single non-streaming completion against Gemini, Imagen, or a
 // Claude partner model depending on the requested model.
 func (d *VertexAIDriver) Execute(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (*ExecutionResponse, error) {
-	return executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
+	return executeWithPrompt(ctx, vertexPromptDriver{d, "execute"}, segments, options, d.requestTextCompletion)
 }
 
 // Stream runs a streaming completion against Gemini or a Claude partner model
-// (Imagen does not support streaming).
+// (Imagen does not support streaming). A stream left unconsumed is released
+// after DriverOptions.StreamStartTimeout.
 func (d *VertexAIDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	return streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	stream, err := streamWithPrompt(ctx, vertexPromptDriver{d, "stream"}, segments, options, d.requestTextCompletionStream)
+	if err != nil {
+		return nil, err
+	}
+	return leaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // requestTextCompletion routes a non-streaming request by model to the Imagen,
 // Claude, or Gemini handler, type-asserting the prompt produced by CreatePrompt.
 func (d *VertexAIDriver) requestTextCompletion(ctx context.Context, prompt any, options ExecutionOptions) (*Completion, error) {
+	if isGeminiOmniVideoModel(options.Model) {
+		return d.requestOmniVideo(ctx, prompt.(omniVideoPrompt), options)
+	}
 	if isVertexImagenModel(options.Model) {
 		return d.requestVertexImagen(ctx, prompt.(vertexImagenPrompt), options)
 	}
 	if isClaudeModel(options.Model) {
 		return d.requestVertexClaude(ctx, prompt.(internalclaude.Prompt), options)
 	}
+	// Open MaaS models use the OpenAI Chat Completions endpoint (maas.go).
+	if route, ok := vertexMaaSRoute(options.Model); ok {
+		return d.requestMaaS(ctx, route, prompt, options)
+	}
+	if isGeminiFileAudioModel(options.Model) {
+		return d.requestGeminiFileAudio(ctx, prompt.(geminiPrompt), options)
+	}
 	return d.requestGemini(ctx, prompt.(geminiPrompt), options)
 }
 
-// requestTextCompletionStream opens an SSE stream. Claude models use the
-// rawPredict endpoint with the Claude payload (stamped with anthropic_version),
-// Gemini models use streamGenerateContent; the alt=sse query param is appended,
-// chunks are decoded per provider, and a finalizer rebuilds the conversation.
+// requestTextCompletionStream opens an SSE stream. Claude partner models are
+// handed to requestVertexClaudeStream; Gemini models use streamGenerateContent
+// with alt=sse, chunks are decoded, and a finalizer rebuilds the conversation.
 func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt any, options ExecutionOptions) (CompletionStream, error) {
+	if isGeminiOmniVideoModel(options.Model) {
+		return nil, d.formatError(newOmniRequestError("Gemini Omni video does not support streaming"), options.Model, "stream")
+	}
 	if isVertexImagenModel(options.Model) {
 		return nil, errors.New("gemini enterprise agent platform imagen models do not support streaming")
 	}
-	var endpoint string
-	var payload map[string]any
-	payloadHeaders := map[string]string{}
-	var err error
 	if isClaudeModel(options.Model) {
-		claudeConversation := internalclaude.ConversationInput(options.Conversation, prompt.(internalclaude.Prompt))
-		endpoint, err = d.vertexEndpoint(options.Model, "rawPredict")
-		if err != nil {
-			return nil, err
-		}
-		payload, payloadHeaders, err = internalclaude.Payload(claudeConversation, withShortModel(options), true, map[string]string{})
-		if err != nil {
-			return nil, err
-		}
-		// Vertex selects the Claude model from the rawPredict resource path; the
-		// partner endpoint rejects the Anthropic-native model field.
-		delete(payload, "model")
-		payload["anthropic_version"] = vertexAnthropicVersion
-	} else {
-		endpoint, err = d.vertexEndpoint(options.Model, "streamGenerateContent")
-		prompt = geminiConversationInput(options.Conversation, prompt.(geminiPrompt))
-		payload = d.geminiPayload(prompt.(geminiPrompt), options)
+		return d.requestVertexClaudeStream(ctx, prompt.(internalclaude.Prompt), options)
 	}
-	if err != nil {
-		return nil, err
+	// Open MaaS models use the OpenAI Chat Completions endpoint (maas.go).
+	if route, ok := vertexMaaSRoute(options.Model); ok {
+		return d.requestMaaSStream(ctx, route, prompt, options)
 	}
-	if !strings.Contains(endpoint, "?") {
-		endpoint += "?alt=sse"
+	if isGeminiFileAudioModel(options.Model) {
+		return d.requestGeminiFileAudioStream(ctx, prompt.(geminiPrompt), options)
 	}
-	headers, err := d.authHeaders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	// Vertex selects the Claude model from the rawPredict resource path; the
-	// partner endpoint rejects the Anthropic-native model field.
-	delete(payload, "model")
-	for key, value := range payloadHeaders {
-		headers[key] = value
-	}
-	body, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
-	if err != nil {
-		return nil, d.formatError(err, options.Model, "stream")
-	}
-	ch := make(chan streamItem)
-	completion := &ExecutionResponse{Prompt: prompt}
-	go func() {
-		defer close(ch)
-		err := scanSSE(body, func(event sseEvent) error {
-			if event.Data == "" {
-				return nil
-			}
-			if isClaudeModel(options.Model) {
-				var envelope map[string]json.RawMessage
-				if err := json.Unmarshal([]byte(event.Data), &envelope); err != nil {
-					return err
-				}
-				chunk := internalclaude.SSEToChunk(envelope, options)
-				if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
-					ch <- streamItem{Chunk: chunk}
-				}
-				return nil
-			}
-			var response geminiResponse
-			if err := json.Unmarshal([]byte(event.Data), &response); err != nil {
-				return err
-			}
-			chunk := geminiResponseToChunk(response)
-			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
-				ch <- streamItem{Chunk: chunk}
-			}
-			return nil
-		})
-		if err != nil && !errors.Is(err, io.EOF) {
-			ch <- streamItem{Err: d.formatError(err, options.Model, "stream")}
-		}
-	}()
-	return newChannelStreamWithFinalizer(ch, completion, body.Close, func(resp *ExecutionResponse) {
-		if isClaudeModel(options.Model) {
-			resp.Conversation = internalclaude.FinalizeConversation(internalclaude.BuildStreamingConversation(internalclaude.ConversationInput(options.Conversation, prompt.(internalclaude.Prompt)), &resp.Completion), options)
-			return
-		}
-		resp.Conversation = finalizeGeminiConversation(buildGeminiStreamingConversation(prompt.(geminiPrompt), &resp.Completion), options)
-	}), nil
-}
-
-// requestGemini POSTs a generateContent request and converts the response into a
-// Completion plus the updated conversation.
-func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt, options ExecutionOptions) (*Completion, error) {
-	prompt = geminiConversationInput(options.Conversation, prompt)
-	endpoint, err := d.vertexEndpoint(options.Model, "generateContent")
-	if err != nil {
-		return nil, err
-	}
-	headers, err := d.authHeaders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	var response geminiResponse
-	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, d.geminiPayload(prompt, options), &response); err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	completion := geminiResponseToCompletion(response, options.IncludeOriginalResponse)
-	completion.Conversation = finalizeGeminiConversation(appendGeminiResponseToConversation(prompt, response), options)
-	return completion, nil
-}
-
-// requestVertexImagen POSTs an Imagen predict request and returns each generated
-// image as a base64 data-URL completion result.
-func (d *VertexAIDriver) requestVertexImagen(ctx context.Context, prompt vertexImagenPrompt, options ExecutionOptions) (*Completion, error) {
-	model := shortResourceName(options.Model)
-	base, err := d.vertexBaseEndpoint("publishers", "google", "models", model+":predict")
-	if err != nil {
-		return nil, err
-	}
-	headers, err := d.authHeaders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	parameters := vertexImagenParameters(prompt, options)
-	payload := map[string]any{
-		"instances":  []vertexImagenPrompt{prompt},
-		"parameters": parameters,
-	}
-	var response struct {
-		Predictions []struct {
-			BytesBase64Encoded string `json:"bytesBase64Encoded"`
-		} `json:"predictions"`
-	}
-	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, base, headers, payload, &response); err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	results := make([]CompletionResult, 0, len(response.Predictions))
-	for _, prediction := range response.Predictions {
-		if prediction.BytesBase64Encoded == "" {
-			continue
-		}
-		results = append(results, newImageResult("data:image/png;base64,"+prediction.BytesBase64Encoded))
-	}
-	return &Completion{Result: results}, nil
-}
-
-// vertexImagenParameters builds the Imagen "parameters" object. An edit_mode value
-// switches to edit/inpaint/outpaint mode (with editConfig); otherwise generation
-// parameters such as aspect ratio, watermarking, and prompt enhancement apply.
-// Nil values are dropped so unset options are omitted from the request.
-func vertexImagenParameters(prompt vertexImagenPrompt, options ExecutionOptions) map[string]any {
-	taskType := optionString(options.ModelOptions, "edit_mode")
-	out := map[string]any{
-		"sampleCount":      optionIntValue(options.ModelOptions, "number_of_images"),
-		"seed":             optionIntValue(options.ModelOptions, "seed"),
-		"safetySetting":    optionString(options.ModelOptions, "safety_setting"),
-		"personGeneration": optionString(options.ModelOptions, "person_generation"),
-		"negativePrompt":   prompt.NegativePrompt,
-	}
-	switch taskType {
-	case "EDIT_MODE_INPAINT_REMOVAL", "EDIT_MODE_INPAINT_INSERTION", "EDIT_MODE_BGSWAP", "EDIT_MODE_OUTPAINT":
-		out["editMode"] = taskType
-		out["editConfig"] = map[string]any{"baseSteps": optionIntValue(options.ModelOptions, "edit_steps")}
-	default:
-		out["addWatermark"] = optionBoolPtrValue(options.ModelOptions, "add_watermark")
-		out["aspectRatio"] = optionString(options.ModelOptions, "aspect_ratio")
-		out["enhancePrompt"] = optionBoolPtrValue(options.ModelOptions, "enhance_prompt")
-	}
-	return removeNilMapValues(out)
+	return d.requestGeminiStream(ctx, prompt.(geminiPrompt), options)
 }
 
 func optionIntValue(options map[string]any, key string) any {
@@ -575,31 +419,44 @@ func optionBoolPtrValue(options map[string]any, key string) any {
 // geminiPayload assembles the generateContent request body: sampling/limit options
 // map into generationConfig, a ResultSchema without tools is sent via Gemini's
 // structured-output transport (responseJsonSchema + JSON mime type) rather than the
-// prompt, thinkingConfig is added when applicable, image models enable IMAGE output
-// modality and imageConfig, and tools add functionDeclarations with AUTO calling.
+// prompt, thinkingConfig is added only when the caller sets a thinking control,
+// image models (Nano Banana included) enable IMAGE output with imageConfig and no
+// tools, and tools add functionDeclarations with the requested calling mode.
 // When tools are disabled but the history still has function parts, they are
 // converted to text so the request stays valid without toolConfig.
 func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOptions) map[string]any {
-	config := map[string]any{
-		"candidateCount": 1,
+	lowerModel := strings.ToLower(options.Model)
+	isNanoBanana := strings.Contains(lowerModel, "gemini-nano-banana")
+	isImageModel := isNanoBanana || strings.Contains(lowerModel, "image")
+	config := map[string]any{}
+	// Retain the single-candidate contract only where the model accepts it; caller
+	// sampling options still pass through for provider validation.
+	if isImageModel || !hasGeminiSamplingRestriction(options.Model) {
+		config["candidateCount"] = 1
 	}
-	if v := optionFloat(options.ModelOptions, "temperature"); v != nil {
-		config["temperature"] = *v
+	// Nano Banana does not accept sampling parameters.
+	if !isNanoBanana {
+		if v := optionFloat(options.ModelOptions, "temperature"); v != nil {
+			config["temperature"] = *v
+		}
+		if v := optionFloat(options.ModelOptions, "top_p"); v != nil {
+			config["topP"] = *v
+		}
 	}
-	if v := optionFloat(options.ModelOptions, "top_p"); v != nil {
-		config["topP"] = *v
-	}
-	if v := optionInt(options.ModelOptions, "top_k"); v != nil {
-		config["topK"] = *v
-	}
-	if v := optionFloat(options.ModelOptions, "presence_penalty"); v != nil {
-		config["presencePenalty"] = *v
-	}
-	if v := optionFloat(options.ModelOptions, "frequency_penalty"); v != nil {
-		config["frequencyPenalty"] = *v
-	}
-	if v := optionInt(options.ModelOptions, "seed"); v != nil {
-		config["seed"] = *v
+	// Image generation requests omit the other generation controls.
+	if !isImageModel {
+		if v := optionInt(options.ModelOptions, "top_k"); v != nil {
+			config["topK"] = *v
+		}
+		if v := optionFloat(options.ModelOptions, "presence_penalty"); v != nil {
+			config["presencePenalty"] = *v
+		}
+		if v := optionFloat(options.ModelOptions, "frequency_penalty"); v != nil {
+			config["frequencyPenalty"] = *v
+		}
+		if v := optionInt(options.ModelOptions, "seed"); v != nil {
+			config["seed"] = *v
+		}
 	}
 	if v := optionInt(options.ModelOptions, "max_tokens"); v != nil {
 		config["maxOutputTokens"] = *v
@@ -607,16 +464,17 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 	if stops := optionStringSlice(options.ModelOptions, "stop_sequence"); len(stops) > 0 {
 		config["stopSequences"] = stops
 	}
-	if options.ResultSchema != nil && len(options.Tools) == 0 {
+	if options.ResultSchema != nil && len(options.Tools) == 0 && !isImageModel {
 		// Use Gemini's structured-output transport instead of placing the schema in
 		// the prompt; this avoids competing instructions and provider token bloat.
 		config["responseMimeType"] = "application/json"
 		config["responseJsonSchema"] = options.ResultSchema
 	}
-	if thinking := geminiThinkingConfig(options); len(thinking) > 0 {
+	if thinking := geminiThinkingConfig(options); thinking != nil {
 		config["thinkingConfig"] = thinking
 	}
-	if strings.Contains(strings.ToLower(options.Model), "image") {
+	if isImageModel {
+		// TEXT alone is an error and IMAGE alone returns blank responses.
 		config["responseModalities"] = []string{"TEXT", "IMAGE"}
 		imageConfig := removeNilMapValues(map[string]any{
 			"aspectRatio":              optionString(options.ModelOptions, "image_aspect_ratio"),
@@ -630,13 +488,9 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 			config["imageConfig"] = imageConfig
 		}
 	}
-	contents := prompt.Contents
-	if len(options.Tools) == 0 && geminiContentsContainToolParts(contents) {
-		// Checkpoint summaries may replay conversations with prior functionCall or
-		// functionResponse parts after tools have been disabled. Convert them to
-		// text so the request remains valid without toolConfig.
-		contents = convertGeminiFunctionPartsToText(contents)
-	}
+	// Image generation requests declare no tools.
+	hasTools := len(options.Tools) > 0 && !isImageModel
+	contents := geminiRequestContents(prompt.Contents, hasTools)
 	payload := map[string]any{
 		"contents":         contents,
 		"generationConfig": config,
@@ -647,13 +501,13 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 	if prompt.System != nil {
 		payload["systemInstruction"] = prompt.System
 	}
-	if len(options.Tools) > 0 {
+	if hasTools {
 		// Gemini expects one tool entry that contains all function declarations.
 		payload["tools"] = []map[string]any{{
 			"functionDeclarations": geminiTools(options.Tools),
 		}}
 		payload["toolConfig"] = map[string]any{
-			"functionCallingConfig": map[string]any{"mode": "AUTO"},
+			"functionCallingConfig": geminiFunctionCallingConfig(options.ModelOptions),
 		}
 	}
 	return payload
@@ -674,34 +528,63 @@ func geminiTools(tools []ToolDefinition) []map[string]any {
 	return out
 }
 
-// geminiConversationInput merges a prior conversation (in any of its stored forms)
-// with the new prompt, carrying over the system instruction and merging roles.
-func geminiConversationInput(conversation any, prompt geminiPrompt) geminiPrompt {
-	out := geminiPrompt{}
+// geminiStoredConversation decodes a prior conversation in any of its stored
+// forms: the geminiPrompt the driver returns (or its JSON object), a bare content
+// array, or the TS client's wrapper ({"_arrayConversation": [...],
+// "_llumiverse_system": {...}}). ok is false for a value that is none of these.
+func geminiStoredConversation(conversation any) (out geminiPrompt, ok bool) {
 	switch value := conversation.(type) {
+	case nil:
+		return out, true
 	case geminiPrompt:
-		out = value
+		return value, true
 	case *geminiPrompt:
 		if value != nil {
 			out = *value
 		}
+		return out, true
 	case []geminiContent:
-		out.Contents = append(out.Contents, value...)
+		out.Contents = value
+		return out, true
 	case map[string]any:
-		var decoded geminiPrompt
-		if decodeStoredConversation(value, &decoded) {
-			out = decoded
+		if wrapped, isWrapped := value["_arrayConversation"].([]any); isWrapped {
+			if !decodeStoredConversation(wrapped, &out.Contents) {
+				return out, false
+			}
+			if system, hasSystem := value["_llumiverse_system"].(map[string]any); hasSystem {
+				var decoded geminiContent
+				if decodeStoredConversation(system, &decoded) {
+					out.System = &decoded
+				}
+			}
+			return out, true
 		}
+		if _, hasContents := value["contents"]; !hasContents {
+			return out, false
+		}
+		return out, decodeStoredConversation(value, &out)
 	case []any:
-		var decoded []geminiContent
-		if decodeStoredConversation(value, &decoded) {
-			out.Contents = append(out.Contents, decoded...)
-		}
+		return out, decodeStoredConversation(value, &out.Contents)
+	default:
+		return out, false
 	}
+}
+
+// geminiStoredContents returns the contents of a prior conversation, or nil when
+// it has none or is not a Gemini conversation.
+func geminiStoredContents(conversation any) []geminiContent {
+	stored, _ := geminiStoredConversation(conversation)
+	return stored.Contents
+}
+
+// geminiConversationInput appends the new prompt to a prior conversation, carrying
+// over the system instruction. The stored conversation is copied, never modified.
+func geminiConversationInput(conversation any, prompt geminiPrompt) geminiPrompt {
+	out, _ := geminiStoredConversation(conversation)
 	if prompt.System != nil {
 		out.System = prompt.System
 	}
-	out.Contents = mergeGeminiRoles(append(out.Contents, prompt.Contents...))
+	out.Contents = append(append(make([]geminiContent, 0, len(out.Contents)+len(prompt.Contents)), out.Contents...), prompt.Contents...)
 	return out
 }
 
@@ -721,32 +604,10 @@ func appendGeminiResponseToConversation(prompt geminiPrompt, response geminiResp
 	}
 	content := response.Candidates[0].Content
 	if len(content.Parts) > 0 {
-		prompt.Contents = mergeGeminiRoles(append(prompt.Contents, content))
-	}
-	return prompt
-}
-
-// buildGeminiStreamingConversation reconstructs the model turn from a streamed
-// completion and appends it to the conversation.
-func buildGeminiStreamingConversation(prompt geminiPrompt, completion *Completion) geminiPrompt {
-	// Streaming does not return one final candidate object, so rebuild the model
-	// turn from accumulated text and function-call chunks before cleanup.
-	parts := []geminiPart{}
-	if text := completionResultsToText(completion.Result); text != "" {
-		parts = append(parts, geminiPart{Text: text})
-	}
-	for _, tool := range completion.ToolUse {
-		var args any
-		if tool.ToolInput != nil {
-			args = map[string]any(*tool.ToolInput)
+		if content.Role == "" {
+			content.Role = "model"
 		}
-		parts = append(parts, geminiPart{
-			FunctionCall:     &geminiFunctionCall{Name: tool.ToolName, Args: args},
-			ThoughtSignature: stringValue(tool.ThoughtSignature),
-		})
-	}
-	if len(parts) > 0 {
-		prompt.Contents = mergeGeminiRoles(append(prompt.Contents, geminiContent{Role: "model", Parts: parts}))
+		prompt.Contents = append(prompt.Contents, content)
 	}
 	return prompt
 }
@@ -788,270 +649,6 @@ func convertGeminiFunctionPartsToText(contents []geminiContent) []geminiContent 
 	return out
 }
 
-// geminiThinkingConfig builds the thinkingConfig object. 3.x models use a
-// thinkingLevel, 2.5 models use a numeric thinkingBudget; explicit options win and
-// otherwise low-cost per-model defaults are applied.
-func geminiThinkingConfig(options ExecutionOptions) map[string]any {
-	out := map[string]any{}
-	explicitThinking := false
-	// Gemini 2.5 and 3.x expose different thinking controls. Explicit
-	// thinking_budget_tokens/thinking_level/effort values take priority; otherwise
-	// the TS driver applies low-cost defaults so supported models stay predictable.
-	if v := optionInt(options.ModelOptions, "thinking_budget_tokens"); v != nil {
-		out["thinkingBudget"] = *v
-		explicitThinking = true
-	}
-	if level := optionString(options.ModelOptions, "thinking_level"); level != "" {
-		out["thinkingLevel"] = level
-		explicitThinking = true
-	}
-	if effort := optionString(options.ModelOptions, "effort"); effort != "" {
-		explicitThinking = true
-		if isGeminiVersionGTE(options.Model, "3.0") {
-			out["thinkingLevel"] = geminiThinkingLevelForEffort(options.Model, effort)
-		} else if _, ok := out["thinkingBudget"]; !ok {
-			out["thinkingBudget"] = geminiBudgetForEffort(options.Model, effort)
-		}
-	}
-	if optionBool(options.ModelOptions, "include_thoughts") {
-		// include_thoughts controls whether reasoning is returned; it does not
-		// select the thinking budget or level by itself.
-		out["includeThoughts"] = true
-	}
-	if !explicitThinking {
-		if isGeminiVersionGTE(options.Model, "3.0") {
-			if strings.Contains(options.Model, "gemini-3-pro-image") {
-				out["thinkingLevel"] = "HIGH"
-			} else {
-				out["thinkingLevel"] = "LOW"
-			}
-			return out
-		}
-		if isGeminiVersionGTE(options.Model, "2.5") {
-			if strings.Contains(options.Model, "pro") {
-				out["thinkingBudget"] = 128
-			} else {
-				out["thinkingBudget"] = 0
-			}
-		}
-	}
-	return out
-}
-
-// geminiThinkingLevelForEffort maps a neutral effort value to a Gemini 3.x
-// thinkingLevel, with per-model overrides for the image variants.
-func geminiThinkingLevelForEffort(model string, effort string) string {
-	if strings.Contains(model, "gemini-3-pro-image") {
-		return "HIGH"
-	}
-	if strings.Contains(model, "gemini-3.1-flash-image") {
-		if effort == "low" {
-			return "MINIMAL"
-		}
-		return "HIGH"
-	}
-	switch effort {
-	case "low":
-		return "LOW"
-	case "medium":
-		return "MEDIUM"
-	case "high":
-		return "HIGH"
-	default:
-		return ""
-	}
-}
-
-// geminiBudgetForEffort maps a neutral effort value to a numeric thinkingBudget
-// for Gemini 2.5 models, scaled by the model tier (pro/flash/flash-lite).
-func geminiBudgetForEffort(model string, effort string) int {
-	isFlashLite := strings.Contains(model, "flash-lite")
-	isFlash := strings.Contains(model, "flash") && !isFlashLite
-	isPro := strings.Contains(model, "pro")
-	switch effort {
-	case "low":
-		if isPro {
-			return 128
-		}
-		if isFlashLite {
-			return 512
-		}
-		if isFlash {
-			return 1
-		}
-		return 1024
-	case "medium":
-		return 8192
-	case "high":
-		if isPro {
-			return 32768
-		}
-		if isFlash || isFlashLite {
-			return 24576
-		}
-		return 8192
-	default:
-		return 0
-	}
-}
-
-// requestVertexClaude POSTs a Claude partner-model request via rawPredict, reusing
-// the shared Claude payload/response handling and stamping the anthropic_version.
-func (d *VertexAIDriver) requestVertexClaude(ctx context.Context, prompt internalclaude.Prompt, options ExecutionOptions) (*Completion, error) {
-	endpoint, err := d.vertexEndpoint(options.Model, "rawPredict")
-	if err != nil {
-		return nil, err
-	}
-	headers, err := d.authHeaders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	payload, payloadHeaders, err := internalclaude.Payload(internalclaude.ConversationInput(options.Conversation, prompt), withShortModel(options), false, map[string]string{})
-	if err != nil {
-		return nil, err
-	}
-	// Vertex selects the Claude model from the rawPredict resource path; the
-	// partner endpoint rejects the Anthropic-native model field.
-	delete(payload, "model")
-	for key, value := range payloadHeaders {
-		headers[key] = value
-	}
-	payload["anthropic_version"] = vertexAnthropicVersion
-	var response internalclaude.Response
-	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, payload, &response); err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	completion := internalclaude.ExtractCompletion(response, options)
-	completion.Conversation = internalclaude.FinalizeConversation(internalclaude.AppendResponseToConversation(internalclaude.ConversationInput(options.Conversation, prompt), response), options)
-	return completion, nil
-}
-
-// geminiResponse is the generateContent / streamGenerateContent response: candidate
-// turns, prompt-level safety feedback, and token usage metadata.
-type geminiResponse struct {
-	Candidates []struct {
-		FinishReason  string        `json:"finishReason"`
-		FinishMessage string        `json:"finishMessage"`
-		Content       geminiContent `json:"content"`
-	} `json:"candidates"`
-	PromptFeedback struct {
-		BlockReason        string `json:"blockReason"`
-		BlockReasonMessage string `json:"blockReasonMessage"`
-	} `json:"promptFeedback"`
-	UsageMetadata struct {
-		PromptTokenCount        int `json:"promptTokenCount"`
-		CandidatesTokenCount    int `json:"candidatesTokenCount"`
-		TotalTokenCount         int `json:"totalTokenCount"`
-		CachedContentTokenCount int `json:"cachedContentTokenCount"`
-		ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
-		ToolUsePromptTokenCount int `json:"toolUsePromptTokenCount"`
-	} `json:"usageMetadata"`
-}
-
-// geminiResponseToCompletion converts a full response into a Completion, ensuring
-// at least one (empty) text result and optionally attaching the raw response.
-func geminiResponseToCompletion(response geminiResponse, includeOriginal bool) *Completion {
-	chunk := geminiResponseToChunk(response)
-	completion := &Completion{
-		Result:       chunk.Result,
-		TokenUsage:   chunk.TokenUsage,
-		ToolUse:      geminiToolUses(chunk.ToolUse),
-		FinishReason: chunk.FinishReason,
-	}
-	if len(completion.Result) == 0 {
-		completion.Result = []CompletionResult{newTextResult("")}
-	}
-	if includeOriginal {
-		completion.OriginalResponse = response
-	}
-	return completion
-}
-
-// geminiToolUses converts the function-call chunks of a full response into the
-// final ToolUse entries, carrying the thought signature only when Gemini sent one.
-func geminiToolUses(chunks []ToolUseChunk) []ToolUse {
-	if chunks == nil {
-		return nil
-	}
-	tools := make([]ToolUse, 0, len(chunks))
-	for _, chunk := range chunks {
-		tool := ToolUse{ID: chunk.ID, ToolName: chunk.ToolName, ToolInput: toolInputObject(chunk.ToolInput)}
-		if chunk.ThoughtSignature != "" {
-			tool.ThoughtSignature = ptr(chunk.ThoughtSignature)
-		}
-		tools = append(tools, tool)
-	}
-	return tools
-}
-
-// geminiResponseToChunk converts a response (full or streamed) into a CompletionChunk:
-// it sums thinking/tool tokens into the result count, surfaces blocked-prompt
-// feedback as text, maps text/image/functionCall parts, and marks tool_use when
-// any function call is present.
-func geminiResponseToChunk(response geminiResponse) CompletionChunk {
-	chunk := CompletionChunk{TokenUsage: geminiUsage(response.UsageMetadata.PromptTokenCount, response.UsageMetadata.CandidatesTokenCount+response.UsageMetadata.ThoughtsTokenCount+response.UsageMetadata.ToolUsePromptTokenCount, response.UsageMetadata.TotalTokenCount, response.UsageMetadata.CachedContentTokenCount)}
-	if len(response.Candidates) == 0 {
-		if response.PromptFeedback.BlockReasonMessage != "" {
-			chunk.Result = []CompletionResult{newTextResult(response.PromptFeedback.BlockReasonMessage)}
-		}
-		chunk.FinishReason = response.PromptFeedback.BlockReason
-		return chunk
-	}
-	candidate := response.Candidates[0]
-	chunk.FinishReason = geminiFinishReason(candidate.FinishReason)
-	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
-			chunk.Result = append(chunk.Result, newTextResult(part.Text))
-		}
-		if part.InlineData != nil {
-			chunk.Result = append(chunk.Result, newImageResult("data:"+part.InlineData.MIMEType+";base64,"+part.InlineData.Data))
-		}
-		if part.FunctionCall != nil {
-			// Tool-call finish reasons are recoverable: return tool_use so the
-			// caller can execute the tool or report a toolError, rather than
-			// treating the model response as a provider failure.
-			chunk.ToolUse = append(chunk.ToolUse, ToolUseChunk{
-				ID:               part.FunctionCall.Name,
-				ToolName:         part.FunctionCall.Name,
-				ToolInput:        part.FunctionCall.Args,
-				ThoughtSignature: part.ThoughtSignature,
-			})
-		}
-	}
-	if len(chunk.ToolUse) > 0 {
-		chunk.FinishReason = "tool_use"
-	}
-	return chunk
-}
-
-// geminiUsage builds token usage accounting, deriving PromptNew from prompt minus
-// cached tokens and returning nil when no usage was reported.
-func geminiUsage(prompt, result, total, cached int) *ExecutionTokenUsage {
-	if prompt == 0 && result == 0 && total == 0 && cached == 0 {
-		return nil
-	}
-	return &ExecutionTokenUsage{
-		Prompt:       tokens(prompt),
-		Result:       tokens(result),
-		Total:        tokens(total),
-		PromptCached: tokens(cached),
-		PromptNew:    tokens(prompt - cached),
-	}
-}
-
-// geminiFinishReason maps Gemini finish reasons to the neutral vocabulary, passing
-// unknown reasons through unchanged.
-func geminiFinishReason(reason string) string {
-	switch reason {
-	case "STOP":
-		return "stop"
-	case "MAX_TOKENS":
-		return "length"
-	default:
-		return reason
-	}
-}
-
 // ListModels lists published Google and Anthropic models for the project/region,
 // optionally filtering by name substring, and returns them sorted by ID.
 func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayload) ([]AIModel, error) {
@@ -1087,15 +684,30 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 		if err := doJSON(ctx, d.client, http.MethodGet, endpoint, headers, nil, &response); err != nil {
 			continue
 		}
-		for _, model := range append(response.PublisherModels, response.Models...) {
+		listedModels := append(response.PublisherModels, response.Models...)
+		for _, additional := range vertexAdditionalPublisherModels[item.publisher] {
+			// Models the publisher listing does not return.
+			listedModels = append(listedModels, struct {
+				Name        string `json:"name"`
+				DisplayName string `json:"displayName"`
+				VersionID   string `json:"versionId"`
+			}{Name: "publishers/" + item.publisher + "/models/" + additional})
+		}
+		for _, model := range listedModels {
 			if params != nil && stringValue(params.Text) != "" && !strings.Contains(strings.ToLower(model.Name), strings.ToLower(*params.Text)) {
 				continue
 			}
+			// Only families with a request path are listed; embedding, Live and other
+			// special-purpose models are left out.
+			if !isListedVertexPublisherModel(item.publisher, model.Name) {
+				continue
+			}
+			short := shortResourceName(model.Name)
 			name := model.DisplayName
 			if name == "" {
-				name = shortResourceName(model.Name)
+				name = short
 			}
-			models = append(models, AIModel{
+			listed := AIModel{
 				ID:          model.Name,
 				Name:        name,
 				Provider:    string(ProviderVertexAI),
@@ -1103,11 +715,28 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 				Type:        ptr(ModelType("text")),
 				CanStream:   ptr(true),
 				ToolSupport: ptr(true),
-			})
+			}
+			if isGeminiOmniVideoModel(short) {
+				listed.Type, listed.CanStream, listed.ToolSupport = ptr(ModelType("video")), ptr(false), ptr(false)
+			} else if item.publisher == "google" && isGeminiFileAudioModel(short) {
+				listed.Type, listed.CanStream = ptr(ModelType("audio")), ptr(false)
+			}
+			if item.publisher == "google" && (isGeminiWithoutRegionalEndpoints(short) || isGeminiOmniVideoModel(short)) {
+				// Models without regional endpoints are listed once, under global.
+				listed.ID, listed.Name = "locations/global/"+model.Name, "Global "+short
+				models = append(models, listed)
+				continue
+			}
+			models = append(models, listed)
+			if hasVertexGlobalListing(item.publisher, model.Name) {
+				global := listed
+				global.ID, global.Name = "locations/global/"+model.Name, "Global "+short
+				models = append(models, global)
+			}
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-	return models, nil
+	return slices.CompactFunc(models, func(a, b AIModel) bool { return a.ID == b.ID }), nil
 }
 
 // ValidateConnection verifies that OAuth credentials can be resolved.
@@ -1156,7 +785,7 @@ func (d *VertexAIDriver) generateVertexTextPredictEmbeddings(ctx context.Context
 	}
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, model, "embeddings")
 	}
 	endpoint, err := d.vertexEndpoint(model, "predict")
 	if err != nil {
@@ -1255,7 +884,7 @@ func (d *VertexAIDriver) generateVertexEmbedContentEmbeddings(ctx context.Contex
 	// config or prefix; media uses inlineData or fileData.
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, model, "embeddings")
 	}
 	endpoint, err := d.vertexEndpointForRegion(model, "embedContent", vertexEmbeddingRegion(model))
 	if err != nil {
@@ -1470,7 +1099,7 @@ func (d *VertexAIDriver) generateVertexLegacyMultimodalEmbeddings(ctx context.Co
 	// multiple segment embeddings inside that prediction.
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, model, "embeddings")
 	}
 	endpoint, err := d.vertexEndpoint(model, "predict")
 	if err != nil {
@@ -1754,23 +1383,27 @@ func (d *VertexAIDriver) tokenSource(ctx context.Context) (oauth2.TokenSource, e
 	return creds.TokenSource, nil
 }
 
-// formatError wraps an HTTP status error in a provider-tagged LlumiverseError
-// (with retryability derived from the status), passing other errors through.
+// formatError wraps a provider error in a LlumiverseError. Gemini, Imagen and
+// embedding models use the Gemini classification (formatGeminiError), as the TS
+// driver routes every non-Claude model to the Gemini error handler. Claude partner
+// models keep the status-based classification, passing errors without an HTTP
+// status through. Either way a 403 naming Cloud Storage gets the bucket hint.
 func (d *VertexAIDriver) formatError(err error, model string, operation string) error {
+	if isGeminiOmniVideoModel(model) {
+		return formatOmniVideoError(err, model, operation)
+	}
+	if !isClaudeModel(model) {
+		return formatGeminiError(err, model, operation)
+	}
 	code, _ := errorStatusAndName(err)
 	if code != 0 {
-		return newLlumiverseError(err.Error(), retryableFromStatusAndMessage(code, err.Error()), LlumiverseErrorContext{
+		return withVertexStorageHint(newLlumiverseError(err.Error(), retryableFromStatusAndMessage(code, err.Error()), LlumiverseErrorContext{
 			Provider:  ProviderVertexAI,
 			Model:     model,
 			Operation: operation,
-		}, err, code, "GeminiEnterpriseAgentPlatformError")
+		}, err, code, vertexErrorName))
 	}
 	return err
-}
-
-// isClaudeModel reports whether a model ID refers to a Claude/Anthropic partner model.
-func isClaudeModel(model string) bool {
-	return strings.Contains(strings.ToLower(model), "claude") || strings.Contains(strings.ToLower(model), "anthropic")
 }
 
 // isVertexImagenModel reports whether a model ID refers to an Imagen image model.

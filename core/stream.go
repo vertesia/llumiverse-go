@@ -26,15 +26,13 @@ type channelStream struct {
 	toolOrder  []string                          // tool IDs in first-seen order, to keep output stable
 	lastToolID string                            // ID of the tool whose deltas are currently arriving
 	nextToolID int                               // counter for synthesizing IDs when a provider omits them
+	errContext LlumiverseErrorContext            // provider and model for errors raised while finalizing
+	finalErr   error                             // error Recv returns instead of io.EOF, set by finalizeCompletion
 }
 
 // streamToolAccumulator gathers the deltas for a single streamed tool call.
-// When arguments arrive as partial JSON strings they are appended to stringInput
-// (usesStringBuf) and parsed once the stream completes.
 type streamToolAccumulator struct {
-	tool          ToolUseChunk
-	stringInput   string
-	usesStringBuf bool
+	tool ToolUseChunk
 }
 
 // StreamItem is one value carried on the stream channel: either a chunk or an error.
@@ -58,10 +56,15 @@ func newChannelStreamWithFinalizer(ch <-chan StreamItem, completion *ExecutionRe
 
 // Recv returns the next chunk, applying it to the accumulated completion, or
 // io.EOF once the stream is exhausted (at which point the completion is finalized).
+// When finalizing finds a streamed tool call it cannot return, Recv returns that
+// error instead of io.EOF.
 func (s *channelStream) Recv() (CompletionChunk, error) {
 	item, ok := <-s.ch
 	if !ok {
 		s.finalizeCompletion()
+		if s.finalErr != nil {
+			return CompletionChunk{}, s.finalErr
+		}
 		return CompletionChunk{}, io.EOF
 	}
 	if item.Err == nil {
@@ -71,13 +74,24 @@ func (s *channelStream) Recv() (CompletionChunk, error) {
 }
 
 // Close finalizes the completion and releases the underlying provider stream.
-// It is safe to call more than once.
+// It is safe to call more than once, and while the stream is still in flight:
+// the chunks nobody will read are drained so the driver goroutine producing
+// them is never left blocked on a send.
 func (s *channelStream) Close() error {
 	var err error
 	s.once.Do(func() {
 		s.finalizeCompletion()
 		if s.closeFn != nil {
 			err = s.closeFn()
+		}
+		if s.ch != nil {
+			// Closing the provider stream makes the producer fail and close the
+			// channel; until then, discard what it still sends.
+			go func() {
+				for item := range s.ch {
+					_ = item
+				}
+			}()
 		}
 	})
 	return err
@@ -89,7 +103,7 @@ func (s *channelStream) Completion() *ExecutionResponse {
 	return s.completion
 }
 
-// applyChunk merges a single chunk's result, tool, usage, and finish-reason
+// applyChunk merges a single chunk's result, tool, usage, finish-reason, and service-tier
 // deltas into the running completion and increments the chunk count.
 func (s *channelStream) applyChunk(chunk CompletionChunk) {
 	// Each provider emits different delta shapes; this is the normalization
@@ -109,16 +123,16 @@ func (s *channelStream) applyChunk(chunk CompletionChunk) {
 	if chunk.FinishReason != "" {
 		s.completion.FinishReason = chunk.FinishReason
 	}
+	if chunk.ServiceTier != "" {
+		s.completion.ServiceTier = chunk.ServiceTier
+	}
 	s.completion.Chunks++
 }
 
 // mergeStreamTools accumulates streamed tool-call deltas into per-ID
 // accumulators, synthesizing an ID when the provider omits one and reusing the
-// last seen ID for continuation deltas. String argument fragments are appended
-// for later parsing; object arguments are merged key-by-key.
+// last seen ID for continuation deltas.
 func (s *channelStream) mergeStreamTools(tools []ToolUseChunk) {
-	// Tool-call arguments often arrive as partial JSON strings. Preserve order
-	// by tool ID and stitch string deltas before exposing the final tool list.
 	if s.tools == nil {
 		s.tools = map[string]*streamToolAccumulator{}
 	}
@@ -138,37 +152,16 @@ func (s *channelStream) mergeStreamTools(tools []ToolUseChunk) {
 			s.toolOrder = append(s.toolOrder, id)
 		}
 		s.lastToolID = id
-		if tool.ToolName != "" {
-			acc.tool.ToolName = tool.ToolName
-		}
-		if tool.ThoughtSignature != "" {
-			acc.tool.ThoughtSignature = tool.ThoughtSignature
-		}
-		if tool.ToolInput == nil {
-			continue
-		}
-		if value, ok := tool.ToolInput.(string); ok {
-			acc.stringInput += value
-			acc.usesStringBuf = true
-			acc.tool.ToolInput = acc.stringInput
-			continue
-		}
-		if existing, ok := acc.tool.ToolInput.(map[string]any); ok {
-			if incoming, ok := tool.ToolInput.(map[string]any); ok {
-				maps.Copy(existing, incoming)
-				acc.tool.ToolInput = existing
-				continue
-			}
-		}
-		acc.tool.ToolInput = tool.ToolInput
+		tool.ID = id
+		accumulateToolUseChunk(&acc.tool, tool)
 	}
 }
 
 // finalizeCompletion is run once when the stream ends: it sets ExecutionTime,
-// reconciles the token-usage total, then parses each accumulated tool's stitched
-// string arguments into JSON. A tool whose buffered arguments fail to parse is
-// marked truncated, and such tools are dropped when FinishReason=="length"
-// (the model was cut off mid tool call). Finally any finalizer hook runs.
+// reconciles the token-usage total, then finalizes the accumulated tool calls
+// with FinalizeStreamingToolUse. A tool call with malformed arguments is left
+// out of the completion, and unless the response was cut off it is reported as
+// the stream's final error. Finally any finalizer hook runs.
 func (s *channelStream) finalizeCompletion() {
 	s.finalOnce.Do(func() {
 		if s.completion == nil {
@@ -180,39 +173,13 @@ func (s *channelStream) finalizeCompletion() {
 				usage.Total = &sum
 			}
 		}
-		if len(s.toolOrder) == 0 {
-			if s.finalizer != nil {
-				s.finalizer(s.completion)
+		if len(s.toolOrder) > 0 {
+			chunks := make([]ToolUseChunk, 0, len(s.toolOrder))
+			for _, id := range s.toolOrder {
+				chunks = append(chunks, s.tools[id].tool)
 			}
-			return
+			s.completion.ToolUse, s.finalErr = finalizeStreamingToolUse(chunks, s.completion.FinishReason, s.errContext)
 		}
-		truncated := map[string]bool{}
-		tools := make([]ToolUse, 0, len(s.toolOrder))
-		for _, id := range s.toolOrder {
-			acc := s.tools[id]
-			if acc == nil {
-				continue
-			}
-			input := acc.tool.ToolInput
-			if acc.usesStringBuf {
-				var parsed any
-				if err := json.Unmarshal([]byte(acc.stringInput), &parsed); err == nil {
-					input = parsed
-				} else {
-					input = map[string]any{}
-					truncated[id] = true
-				}
-			}
-			tool := ToolUse{ID: acc.tool.ID, ToolName: acc.tool.ToolName, ToolInput: ToolInputObject(input)}
-			if acc.tool.ThoughtSignature != "" {
-				tool.ThoughtSignature = &acc.tool.ThoughtSignature
-			}
-			if s.completion.FinishReason == "length" && truncated[id] {
-				continue
-			}
-			tools = append(tools, tool)
-		}
-		s.completion.ToolUse = tools
 		if s.finalizer != nil {
 			s.finalizer(s.completion)
 		}
@@ -220,8 +187,9 @@ func (s *channelStream) finalizeCompletion() {
 }
 
 // mergeStreamResults appends src result deltas onto dst, coalescing consecutive
-// same-type items: text values are concatenated and JSON object values are
-// merged key-by-key, so streamed fragments collapse into a single result item.
+// same-type items: text and thoughts values are concatenated and JSON object
+// values are merged key-by-key, so streamed fragments collapse into a single
+// result item. Media results (image, video, audio) keep their boundaries.
 func mergeStreamResults(dst []CompletionResult, src []CompletionResult) []CompletionResult {
 	for _, result := range src {
 		if len(dst) == 0 {
@@ -232,6 +200,12 @@ func mergeStreamResults(dst []CompletionResult, src []CompletionResult) []Comple
 		kind := result.Type()
 		if last.Type() == kind && kind == ResultTypeText {
 			*last = NewTextResult(last.String() + result.String())
+			continue
+		}
+		// Thoughts stay a separate typed result, never merged into the answer
+		// text, but their own fragments collapse like text.
+		if last.Type() == kind && kind == ResultTypeThoughts {
+			*last = NewThoughtsResult(last.String() + result.String())
 			continue
 		}
 		if last.Type() == kind && kind == ResultTypeJSON {
@@ -255,6 +229,9 @@ func mergeStreamResults(dst []CompletionResult, src []CompletionResult) []Comple
 // mergeStreamUsage folds a usage delta into the running total. Prompt/Result/Total
 // are taken as the running maximum (providers may resend cumulative counts), while
 // the cache-related fields are overwritten when the delta reports a nonzero value.
+// Hosted tool usage is reported whole, with or without token counts, so the
+// latest report replaces it; a delta carrying only tool usage leaves the token
+// counts unset rather than inventing zeros.
 func mergeStreamUsage(dst *ExecutionTokenUsage, src *ExecutionTokenUsage) *ExecutionTokenUsage {
 	if src == nil {
 		return dst
@@ -270,6 +247,7 @@ func mergeStreamUsage(dst *ExecutionTokenUsage, src *ExecutionTokenUsage) *Execu
 		{&dst.PromptCached, &src.PromptCached},
 		{&dst.PromptCacheWrite, &src.PromptCacheWrite},
 		{&dst.PromptCacheWrite1H, &src.PromptCacheWrite1H},
+		{&dst.PromptCacheWrite12H, &src.PromptCacheWrite12H},
 		{&dst.PromptNew, &src.PromptNew},
 		{&dst.ResultImage, &src.ResultImage},
 		{&dst.ProviderCostUsd, &src.ProviderCostUsd},
@@ -277,6 +255,9 @@ func mergeStreamUsage(dst *ExecutionTokenUsage, src *ExecutionTokenUsage) *Execu
 		if Count(*field.src) != 0 {
 			*field.dst = *field.src
 		}
+	}
+	if src.ToolUsage != nil {
+		dst.ToolUsage = src.ToolUsage
 	}
 	return dst
 }

@@ -18,6 +18,13 @@ type CompletionResult = common.CompletionResult
 type JSONObject = common.JSONObject
 type ModelType = common.ModelType
 type ExecutionTokenUsage = common.ExecutionTokenUsage
+type PromptCacheMode = common.PromptCacheMode
+type PromptCacheDiagnostic = common.PromptCacheDiagnostic
+type ToolUsage = common.ToolUsage
+type ToolTokenUsage = common.ToolTokenUsage
+type AudioResult = common.AudioResult
+type ConversationCompactionOptions = common.ConversationCompactionOptions
+type CompactConversationOptions = common.CompactConversationOptions
 type ResultValidationError = common.ResultValidationError
 type Completion = common.Completion
 type ExecutionResponse = common.ExecutionResponse
@@ -41,6 +48,8 @@ const (
 	ProviderAnthropic        = common.ProviderAnthropic
 	ProviderVertexAI         = common.ProviderVertexAI
 	ProviderBedrock          = common.ProviderBedrock
+	ProviderAzureFoundry     = common.ProviderAzureFoundry
+	ProviderAzureOpenAI      = common.ProviderAzureOpenAI
 
 	PromptRoleSafety    = common.PromptRoleSafety
 	PromptRoleSystem    = common.PromptRoleSystem
@@ -59,6 +68,10 @@ const (
 
 	EmbeddingTaskQuery    = common.EmbeddingTaskQuery
 	EmbeddingTaskDocument = common.EmbeddingTaskDocument
+
+	PromptCacheModeAuto     = common.PromptCacheModeAuto
+	PromptCacheModeOff      = common.PromptCacheModeOff
+	PromptCacheModeRequired = common.PromptCacheModeRequired
 )
 
 // Result constructors, re-exported from package common.
@@ -79,6 +92,10 @@ func Count(v *float64) float64 { return common.Count(v) }
 
 // ToolInputObject converts a decoded tool input into the JSONObject ToolUse holds.
 func ToolInputObject(input any) *JSONObject { return common.ToolInputObject(input) }
+
+// IsCutOffFinishReason reports whether finishReason means the response may have stopped in the
+// middle of its last tool call (a length limit, a refusal, a content filter).
+func IsCutOffFinishReason(finishReason string) bool { return common.IsCutOffFinishReason(finishReason) }
 
 // Ptr returns a pointer to v, for the optional fields of the generated types.
 func Ptr[T any](v T) *T {

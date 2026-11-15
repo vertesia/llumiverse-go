@@ -343,15 +343,16 @@ func TestVertexGeminiPromptFormattingAndHelperBranches(t *testing.T) {
 	if prompt.System == nil || len(prompt.System.Parts) != 2 || !strings.Contains(prompt.System.Parts[1].Text, "When not calling tools") {
 		t.Fatalf("system = %#v", prompt.System)
 	}
-	if len(prompt.Contents) != 2 || prompt.Contents[0].Role != "model" || prompt.Contents[1].Role != "user" {
+	// Segment boundaries are kept, as in the TS driver: one content per segment.
+	if len(prompt.Contents) != 4 || prompt.Contents[0].Role != "model" || prompt.Contents[1].Role != "user" {
 		t.Fatalf("contents = %#v", prompt.Contents)
 	}
-	toolPart := prompt.Contents[1].Parts[1]
+	toolPart := prompt.Contents[2].Parts[0]
 	if toolPart.FunctionResponse == nil || toolPart.FunctionResponse.Name != "lookup" || toolPart.ThoughtSignature != "sig" {
 		t.Fatalf("tool part = %#v", toolPart)
 	}
-	if prompt.Contents[1].Parts[2].Text != "Safety" {
-		t.Fatalf("safety part = %#v", prompt.Contents[1].Parts)
+	if prompt.Contents[3].Parts[0].Text != "Safety" {
+		t.Fatalf("safety part = %#v", prompt.Contents[3].Parts)
 	}
 	sparse, err := driver.formatGeminiPrompt(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "Question"}}, ExecutionOptions{
 		ResultSchema: map[string]any{"type": "object"},
@@ -418,8 +419,10 @@ func TestVertexGeminiDefaultThinkingAndImageConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := got["generationConfig"].(map[string]any)
+	// Without a thinking control only include_thoughts is sent, so the model keeps
+	// its own default thinking level.
 	thinking := config["thinkingConfig"].(map[string]any)
-	if thinking["thinkingLevel"] != "HIGH" || thinking["includeThoughts"] != true {
+	if _, ok := thinking["thinkingLevel"]; ok || thinking["includeThoughts"] != true {
 		t.Fatalf("thinkingConfig = %#v", thinking)
 	}
 	modalities := config["responseModalities"].([]any)
@@ -446,7 +449,7 @@ func TestVertexThinkingAndEmbeddingHelperBranches(t *testing.T) {
 		Model:        "gemini-2.5-flash",
 		ModelOptions: map[string]any{"include_thoughts": true},
 	})
-	if thinking["thinkingBudget"] != 0 || thinking["includeThoughts"] != true {
+	if _, ok := thinking["thinkingBudget"]; ok || thinking["includeThoughts"] != true {
 		t.Fatalf("default flash thinking = %#v", thinking)
 	}
 
@@ -889,31 +892,15 @@ func TestVertexHelperBranches(t *testing.T) {
 	if len(tools) != 1 || tools[0]["name"] != "lookup" || tools[0]["parametersJsonSchema"] == nil {
 		t.Fatalf("tools = %#v", tools)
 	}
-	streamed := buildGeminiStreamingConversation(geminiPrompt{}, &Completion{
-		Result: []CompletionResult{newTextResult("hello")},
-		ToolUse: []ToolUse{{
-			ID:               "lookup",
-			ToolName:         "lookup",
-			ToolInput:        &JSONObject{"q": "tokyo"},
-			ThoughtSignature: ptr("sig"),
-		}},
-	})
-	if len(streamed.Contents) != 1 || len(streamed.Contents[0].Parts) != 2 || streamed.Contents[0].Parts[1].ThoughtSignature != "sig" {
-		t.Fatalf("streamed conversation = %#v", streamed)
+	streamed := appendGeminiStreamParts(nil, []geminiPart{{Text: "hel"}, {Text: "lo"}})
+	streamed = appendGeminiStreamParts(streamed, []geminiPart{{FunctionCall: &geminiFunctionCall{ID: "lookup", Name: "lookup"}, ThoughtSignature: "sig"}})
+	if len(streamed) != 2 || streamed[0].Text != "hello" || streamed[1].ThoughtSignature != "sig" {
+		t.Fatalf("streamed parts = %#v", streamed)
 	}
-	if got := geminiThinkingLevelForEffort("gemini-3-pro-image-preview", "low"); got != "HIGH" {
-		t.Fatalf("image level = %q", got)
-	}
-	if got := geminiThinkingLevelForEffort("gemini-3.1-flash-image", "low"); got != "MINIMAL" {
-		t.Fatalf("flash image low = %q", got)
-	}
-	if got := geminiThinkingLevelForEffort("gemini-3.1-flash-image", "medium"); got != "HIGH" {
-		t.Fatalf("flash image medium = %q", got)
-	}
-	if got := geminiThinkingLevelForEffort("gemini-3-pro", "medium"); got != "MEDIUM" {
+	if got := geminiThinkingLevelForEffort("medium"); got != "MEDIUM" {
 		t.Fatalf("medium level = %q", got)
 	}
-	if got := geminiThinkingLevelForEffort("gemini-3-pro", "unknown"); got != "" {
+	if got := geminiThinkingLevelForEffort("unknown"); got != "" {
 		t.Fatalf("unknown level = %q", got)
 	}
 	if got := geminiBudgetForEffort("gemini-2.5-pro", "high"); got != 32768 {
@@ -928,13 +915,10 @@ func TestVertexHelperBranches(t *testing.T) {
 	if got := geminiBudgetForEffort("gemini-2.5-flash", "high"); got != 24576 {
 		t.Fatalf("flash high budget = %d", got)
 	}
-	if got := geminiBudgetForEffort("gemini-2.5", "unknown"); got != 0 {
-		t.Fatalf("unknown budget = %d", got)
-	}
 	if got := geminiFinishReason("MAX_TOKENS"); got != "length" {
 		t.Fatalf("finish = %q", got)
 	}
-	if geminiUsage(0, 0, 0, 0) != nil {
+	if geminiUsage(geminiUsageMetadata{}) != nil {
 		t.Fatal("zero Gemini usage should be nil")
 	}
 }
@@ -1010,14 +994,14 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	filePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", URI: "gs://bucket/image.png"})
+	filePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", URI: "gs://bucket/image.png"}, &geminiInlineBudget{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if filePart.FileData == nil || filePart.FileData.FileURI != "gs://bucket/image.png" {
 		t.Fatalf("file data part = %#v", filePart)
 	}
-	inlinePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", Data: []byte("img")})
+	inlinePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", Data: []byte("img")}, &geminiInlineBudget{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1028,14 +1012,14 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 		t.Fatal("GCS URL helper returned unexpected result")
 	}
 
-	blocked := geminiResponseToChunk(geminiResponse{})
+	blocked := geminiResponseToChunk(geminiResponse{}, true)
 	if blocked.TokenUsage != nil || blocked.FinishReason != "" || len(blocked.Result) != 0 {
 		t.Fatalf("empty chunk = %#v", blocked)
 	}
 	blocked = geminiResponseToChunk(geminiResponse{PromptFeedback: struct {
 		BlockReason        string `json:"blockReason"`
 		BlockReasonMessage string `json:"blockReasonMessage"`
-	}{BlockReason: "SAFETY", BlockReasonMessage: "blocked"}})
+	}{BlockReason: "SAFETY", BlockReasonMessage: "blocked"}}, true)
 	if blocked.FinishReason != "SAFETY" || blocked.Result[0].String() != "blocked" {
 		t.Fatalf("blocked chunk = %#v", blocked)
 	}
@@ -1053,14 +1037,14 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 	}`), &response); err != nil {
 		t.Fatal(err)
 	}
-	completion := geminiResponseToCompletion(response, true)
+	completion := geminiResponseToCompletion(response, ExecutionOptions{IncludeOriginalResponse: true})
 	if completion.OriginalResponse == nil || completion.FinishReason != "tool_use" || len(completion.Result) != 2 || len(completion.ToolUse) != 1 {
 		t.Fatalf("completion = %#v", completion)
 	}
 	if completion.TokenUsage == nil || completion.TokenUsage.Result == nil || *completion.TokenUsage.Result != 8 || completion.TokenUsage.PromptNew == nil || *completion.TokenUsage.PromptNew != 3 {
 		t.Fatalf("usage = %#v", completion.TokenUsage)
 	}
-	if empty := geminiResponseToCompletion(geminiResponse{}, false); len(empty.Result) != 1 || empty.Result[0].String() != "" {
+	if empty := geminiResponseToCompletion(geminiResponse{}, ExecutionOptions{}); len(empty.Result) != 1 || empty.Result[0].String() != "" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 }
@@ -1074,7 +1058,7 @@ func TestVertexImagenPromptAndParametersHelpers(t *testing.T) {
 		{Role: PromptRoleSafety, Content: "safe"},
 		{Role: PromptRoleNegative, Content: "blur"},
 		{Role: PromptRoleMask, Files: []DataSource{BytesDataSource{FileName: "mask.png", MIME: "image/png", Data: []byte("mask")}}},
-	}, ExecutionOptions{ModelOptions: map[string]any{"mask_mode": "MASK_MODE_USER_PROVIDED", "mask_dilation": 0.2}})
+	}, ExecutionOptions{ModelOptions: map[string]any{"edit_mode": "EDIT_MODE_INPAINT_INSERTION", "mask_mode": "MASK_MODE_USER_PROVIDED", "mask_dilation": 0.2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1084,11 +1068,14 @@ func TestVertexImagenPromptAndParametersHelpers(t *testing.T) {
 	if len(prompt.ReferenceImages) != 2 || prompt.ReferenceImages[1]["referenceType"] != "REFERENCE_TYPE_MASK" {
 		t.Fatalf("reference images = %#v", prompt.ReferenceImages)
 	}
-	params := vertexImagenParameters(prompt, ExecutionOptions{ModelOptions: map[string]any{
+	params, err := vertexImagenParameters(prompt, ExecutionOptions{ModelOptions: map[string]any{
 		"edit_mode":    "EDIT_MODE_INPAINT_INSERTION",
 		"edit_steps":   12,
 		"aspect_ratio": "ignored-for-edit",
 	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if params["editMode"] != "EDIT_MODE_INPAINT_INSERTION" || params["editConfig"].(map[string]any)["baseSteps"] != 12 {
 		t.Fatalf("edit params = %#v", params)
 	}
@@ -1124,7 +1111,7 @@ func TestVertexListModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := driver.ListModels(context.Background(), &ModelSearchPayload{Text: ptr("gemini")})
+	models, err := driver.ListModels(context.Background(), &ModelSearchPayload{Text: ptr("gemini-b")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1135,7 +1122,7 @@ func TestVertexListModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 3 || models[0].ID != "publishers/anthropic/models/claude-a" {
+	if len(models) != 6 || models[3].ID != "publishers/anthropic/models/claude-a" {
 		t.Fatalf("models = %#v", models)
 	}
 }
@@ -1216,8 +1203,11 @@ func TestVertexErrorFormattingFromHTTPStatus(t *testing.T) {
 	if !errors.As(err, &llumiErr) || llumiErr.Name != "GeminiEnterpriseAgentPlatformError" || llumiErr.Code != http.StatusServiceUnavailable || llumiErr.Context.Provider != ProviderVertexAI {
 		t.Fatalf("error = %#v", err)
 	}
-	if err := driver.formatError(errors.New("plain"), "gemini-test", "execute"); err.Error() != "plain" {
-		t.Fatalf("plain error = %v", err)
+	if err := driver.formatError(errors.New("plain"), "claude-test", "execute"); err.Error() != "plain" {
+		t.Fatalf("plain Claude error = %v", err)
+	}
+	if err := driver.formatError(errors.New("plain"), "gemini-test", "execute"); !errors.As(err, &llumiErr) || llumiErr.Retryable != nil {
+		t.Fatalf("plain Gemini error = %#v", err)
 	}
 }
 
