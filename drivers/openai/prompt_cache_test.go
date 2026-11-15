@@ -102,6 +102,47 @@ func TestOpenAIResponsesPromptCacheTTL(t *testing.T) {
 	}
 }
 
+// Mirrors the TS GLM 5.3 and MiniMax structured output tests on
+// OpenAI-compatible endpoints.
+func TestOpenAICompatibleSchemaRules(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}
+	run := func(model string) map[string]any {
+		t.Helper()
+		var body map[string]any
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(okResponse))
+		}))
+		defer server.Close()
+		driver, err := NewOpenAICompatibleDriver(OpenAICompatibleOptions{APIKey: "k", Endpoint: server.URL})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := driver.Execute(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "Hi"}}, ExecutionOptions{Model: model, ResultSchema: schema}); err != nil {
+			t.Fatal(err)
+		}
+		return body
+	}
+	for model, want := range map[string]struct{ native, inPrompt bool }{
+		"z-ai/glm-5.3":    {false, true},
+		"z-ai/glm-5.4":    {true, false},
+		"minimax/m2.7":    {true, true},
+		"openai/gpt-5.6":  {true, false},
+		"z-ai/glm-5.30-x": {true, false},
+	} {
+		body := run(model)
+		if native := body["text"] != nil; native != want.native {
+			t.Errorf("%s: native = %v", model, native)
+		}
+		if inPrompt := strings.Contains(marshalNoEscape(body["input"]), "<response_schema>"); inPrompt != want.inPrompt {
+			t.Errorf("%s: in prompt = %v", model, inPrompt)
+		}
+	}
+}
+
 // Mirrors the TS extra_body and seed tests: extensions reach the body root
 // without replacing the fields llumiverse sets, and a seed is passed through.
 func TestOpenAIResponsesExtraBodyAndSeed(t *testing.T) {

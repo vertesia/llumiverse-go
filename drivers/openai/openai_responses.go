@@ -104,8 +104,9 @@ func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segm
 		case options.PromptCacheSchemaSuffix:
 			// After the cached prefix, so changing the schema keeps the prompt cache.
 			others = append(others, responseMessage("user", schemaPart))
-		case !d.supportsSchema(options.Model):
-			// Without native structured output, the schema goes into the instructions.
+		case !d.supportsSchema(options.Model) || d.supplementsSchemaInPrompt(options.Model):
+			// Without native structured output, or when the model needs it
+			// restated, the schema goes into the instructions.
 			system = append(system, responseMessage(systemRole, schemaPart))
 		}
 	}
@@ -114,10 +115,27 @@ func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segm
 	return prompt, nil
 }
 
+var (
+	openAICompatibleGLM53Pattern   = regexp.MustCompile(`^z-ai/glm-5\.3(?:$|[-/:])`)
+	openAICompatibleMiniMaxPattern = regexp.MustCompile(`(?i)^minimax/`)
+)
+
 // supportsSchema reports whether the model takes native structured output:
-// realtime models and models without tool support do not.
+// realtime models and models without tool support do not. GLM 5.3 on
+// OpenAI-compatible endpoints advertises it but returns unconstrained prose,
+// so it keeps the prompt schema.
 func (d *OpenAICompatibleDriver) supportsSchema(model string) bool {
+	if d.Provider() == ProviderOpenAICompatible && openAICompatibleGLM53Pattern.MatchString(model) {
+		return false
+	}
 	return !strings.Contains(strings.ToLower(model), "realtime") && !isLikelyNonToolOpenAIModel(model)
+}
+
+// supplementsSchemaInPrompt reports whether the schema is restated in the
+// instructions as well as sent natively: MiniMax on OpenAI-compatible
+// endpoints follows the native format only with it.
+func (d *OpenAICompatibleDriver) supplementsSchemaInPrompt(model string) bool {
+	return d.Provider() == ProviderOpenAICompatible && openAICompatibleMiniMaxPattern.MatchString(model)
 }
 
 // openAISchemaInstruction is the prompt instruction that carries a result schema.
