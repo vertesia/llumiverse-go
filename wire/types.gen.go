@@ -788,6 +788,7 @@ const (
 	ThinkingLevelMEDIUM                   ThinkingLevel = "MEDIUM"
 	ThinkingLevelMINIMAL                  ThinkingLevel = "MINIMAL"
 	ThinkingLevelTHINKINGLEVELUNSPECIFIED ThinkingLevel = "THINKING_LEVEL_UNSPECIFIED"
+	ThinkingLevelXHIGH                    ThinkingLevel = "XHIGH"
 )
 
 // Defines values for ThoughtsResultType.
@@ -818,6 +819,12 @@ const (
 	VertexAIClaudeOptionsEffortMax    VertexAIClaudeOptionsEffort = "max"
 	VertexAIClaudeOptionsEffortMedium VertexAIClaudeOptionsEffort = "medium"
 	VertexAIClaudeOptionsEffortXhigh  VertexAIClaudeOptionsEffort = "xhigh"
+)
+
+// Defines values for VertexAIClaudeOptionsSpeed.
+const (
+	VertexAIClaudeOptionsSpeedFast     VertexAIClaudeOptionsSpeed = "fast"
+	VertexAIClaudeOptionsSpeedStandard VertexAIClaudeOptionsSpeed = "standard"
 )
 
 // Defines values for VertexAIClaudeOptionsThinkingMode.
@@ -852,6 +859,7 @@ const (
 	VertexAIGeminiOmniVideoOptionsTaskImageToVideo     VertexAIGeminiOmniVideoOptionsTask = "image_to_video"
 	VertexAIGeminiOmniVideoOptionsTaskReferenceToVideo VertexAIGeminiOmniVideoOptionsTask = "reference_to_video"
 	VertexAIGeminiOmniVideoOptionsTaskTextToVideo      VertexAIGeminiOmniVideoOptionsTask = "text_to_video"
+	VertexAIGeminiOmniVideoOptionsTaskUpscale          VertexAIGeminiOmniVideoOptionsTask = "upscale"
 )
 
 // Defines values for VertexAIGeminiOptionsOptionID.
@@ -865,6 +873,7 @@ const (
 	VertexAIGeminiOptionsEffortLow     VertexAIGeminiOptionsEffort = "low"
 	VertexAIGeminiOptionsEffortMedium  VertexAIGeminiOptionsEffort = "medium"
 	VertexAIGeminiOptionsEffortMinimal VertexAIGeminiOptionsEffort = "minimal"
+	VertexAIGeminiOptionsEffortXhigh   VertexAIGeminiOptionsEffort = "xhigh"
 )
 
 // Defines values for VertexAIGeminiOptionsImageAspectRatio.
@@ -991,6 +1000,7 @@ type AnthropicClaudeOptions struct {
 	Effort               *AnthropicClaudeOptionsEffort   `json:"effort,omitempty"`
 	IncludeThoughts      *bool                           `json:"include_thoughts,omitempty"`
 	MaxTokens            *float64                        `json:"max_tokens,omitempty"`
+	NativeCompaction     *bool                           `json:"native_compaction,omitempty"`
 	Speed                *AnthropicClaudeOptionsSpeed    `json:"speed,omitempty"`
 	StopSequence         *[]string                       `json:"stop_sequence,omitempty"`
 	Temperature          *float64                        `json:"temperature,omitempty"`
@@ -1082,6 +1092,7 @@ type BedrockClaudeOptions struct {
 	Effort             *BedrockClaudeOptionsEffort   `json:"effort,omitempty"`
 	IncludeThoughts    *bool                         `json:"include_thoughts,omitempty"`
 	MaxTokens          *float64                      `json:"max_tokens,omitempty"`
+	NativeCompaction   *bool                         `json:"native_compaction,omitempty"`
 
 	// ServiceTier Provider-defined processing tier. Unknown non-empty values are preserved for forward compatibility.
 	ServiceTier          *string   `json:"service_tier,omitempty"`
@@ -1198,6 +1209,7 @@ type BedrockMantleClaudeOptions struct {
 	Effort               *BedrockMantleClaudeOptionsEffort   `json:"effort,omitempty"`
 	IncludeThoughts      *bool                               `json:"include_thoughts,omitempty"`
 	MaxTokens            *float64                            `json:"max_tokens,omitempty"`
+	NativeCompaction     *bool                               `json:"native_compaction,omitempty"`
 	StopSequence         *[]string                           `json:"stop_sequence,omitempty"`
 	Temperature          *float64                            `json:"temperature,omitempty"`
 	ThinkingBudgetTokens *float64                            `json:"thinking_budget_tokens,omitempty"`
@@ -1370,6 +1382,9 @@ type ExecutionTokenUsage struct {
 	// PromptCacheWrite Number of input tokens written to prompt cache.
 	PromptCacheWrite *float64 `json:"prompt_cache_write,omitempty"`
 
+	// PromptCacheWrite12H Of `prompt_cache_write`, the tokens written with a 12-hour cache retention, when the provider reports it (OpenAI). The remainder used the default (30-minute) retention.
+	PromptCacheWrite12H *float64 `json:"prompt_cache_write_12h,omitempty"`
+
 	// PromptCacheWrite1H Of `prompt_cache_write`, the tokens written with a one-hour cache lifetime, when the provider reports it. The remainder used the default (five-minute) lifetime.
 	PromptCacheWrite1H *float64 `json:"prompt_cache_write_1h,omitempty"`
 
@@ -1383,7 +1398,10 @@ type ExecutionTokenUsage struct {
 
 	// ResultImage Of `result`, the tokens of generated images, when the provider reports them. Image output is priced separately from text output.
 	ResultImage *float64 `json:"result_image,omitempty"`
-	Total       *float64 `json:"total,omitempty"`
+
+	// ToolUsage Usage billed apart from the main model: hosted tools and auxiliary models. Not included in `prompt`, `result` or `total`. A tool with no reported usage is absent.
+	ToolUsage *ToolUsage `json:"tool_usage,omitempty"`
+	Total     *float64   `json:"total,omitempty"`
 }
 
 // GroqOptions defines model for GroqOptions.
@@ -1745,6 +1763,7 @@ type OpenAiTextOptions struct {
 	ImageGeneration  *OpenAiImageGenerationOptions `json:"image_generation,omitempty"`
 	IncludeThoughts  *bool                         `json:"include_thoughts,omitempty"`
 	MaxTokens        *float64                      `json:"max_tokens,omitempty"`
+	NativeCompaction *bool                         `json:"native_compaction,omitempty"`
 	PresencePenalty  *float64                      `json:"presence_penalty,omitempty"`
 	ReasoningEffort  *ReasoningEffort              `json:"reasoning_effort,omitempty"`
 	Seed             *float64                      `json:"seed,omitempty"`
@@ -1782,6 +1801,7 @@ type OpenAiThinkingOptions struct {
 	ImageGeneration  *OpenAiImageGenerationOptions          `json:"image_generation,omitempty"`
 	IncludeThoughts  *bool                                  `json:"include_thoughts,omitempty"`
 	MaxTokens        *float64                               `json:"max_tokens,omitempty"`
+	NativeCompaction *bool                                  `json:"native_compaction,omitempty"`
 	ReasoningContext *OpenAiThinkingOptionsReasoningContext `json:"reasoning_context,omitempty"`
 	ReasoningEffort  *ReasoningEffort                       `json:"reasoning_effort,omitempty"`
 
@@ -1982,6 +2002,27 @@ type ToolDefinition struct {
 	Name        string                 `json:"name"`
 }
 
+// ToolTokenUsage defines model for ToolTokenUsage.
+type ToolTokenUsage struct {
+	Model        *string  `json:"model,omitempty"`
+	Prompt       *float64 `json:"prompt,omitempty"`
+	PromptCached *float64 `json:"prompt_cached,omitempty"`
+	Result       *float64 `json:"result,omitempty"`
+
+	// ResultImage Of `result`, the tokens of generated images, when the provider reports them.
+	ResultImage *float64 `json:"result_image,omitempty"`
+	Total       *float64 `json:"total,omitempty"`
+}
+
+// ToolUsage Usage billed apart from the main model: hosted tools and auxiliary models. Not included in `prompt`, `result` or `total`. A tool with no reported usage is absent.
+type ToolUsage struct {
+	ImageGeneration *ToolTokenUsage `json:"image_generation,omitempty"`
+	Svg             *ToolTokenUsage `json:"svg,omitempty"`
+
+	// WebSearchRequests Billable web search requests (OpenAI Responses `tool_usage.web_search`).
+	WebSearchRequests *float64 `json:"web_search_requests,omitempty"`
+}
+
 // ToolUse A tool use instance represents a call to a tool. The id property is used to identify the tool call.
 type ToolUse struct {
 	ID string `json:"id"`
@@ -2013,6 +2054,8 @@ type VertexAIClaudeOptions struct {
 	Effort               *VertexAIClaudeOptionsEffort   `json:"effort,omitempty"`
 	IncludeThoughts      *bool                          `json:"include_thoughts,omitempty"`
 	MaxTokens            *float64                       `json:"max_tokens,omitempty"`
+	NativeCompaction     *bool                          `json:"native_compaction,omitempty"`
+	Speed                *VertexAIClaudeOptionsSpeed    `json:"speed,omitempty"`
 	StopSequence         *[]string                      `json:"stop_sequence,omitempty"`
 	Temperature          *float64                       `json:"temperature,omitempty"`
 	ThinkingBudgetTokens *float64                       `json:"thinking_budget_tokens,omitempty"`
@@ -2032,6 +2075,9 @@ type VertexAIClaudeOptionsCacheTTL string
 // VertexAIClaudeOptionsEffort defines model for VertexAIClaudeOptions.Effort.
 type VertexAIClaudeOptionsEffort string
 
+// VertexAIClaudeOptionsSpeed defines model for VertexAIClaudeOptions.Speed.
+type VertexAIClaudeOptionsSpeed string
+
 // VertexAIClaudeOptionsThinkingMode Thinking mode override. Sonnet 5.5 supports between_tools at low, medium, or high effort. It omits display and budget fields; keep effort fixed during the conversation. When unset, existing model-specific thinking behavior is preserved.
 type VertexAIClaudeOptionsThinkingMode string
 
@@ -2041,6 +2087,7 @@ type VertexAIGeminiOmniVideoOptions struct {
 	AspectRatio        *VertexAIGeminiOmniVideoOptionsAspectRatio `json:"aspect_ratio,omitempty"`
 	DurationSeconds    *int                                       `json:"duration_seconds,omitempty"`
 	Resolution         *VertexAIGeminiOmniVideoOptionsResolution  `json:"resolution,omitempty"`
+	Seed               *int                                       `json:"seed,omitempty"`
 	Task               *VertexAIGeminiOmniVideoOptionsTask        `json:"task,omitempty"`
 }
 
