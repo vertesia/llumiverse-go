@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
@@ -127,6 +129,27 @@ func TestClaudeModelVersionHelpers(t *testing.T) {
 	if ClaudeHasSamplingParameterRestriction("not-claude") {
 		t.Fatal("unparseable model should not have sampling restriction")
 	}
+
+	// Mirrors the TS client's parseClaudeVersion cases.
+	for model, want := range map[string]ClaudeVersion{
+		"claude-opus-4-7":                         {Major: 4, Minor: 7, Variant: "opus"},
+		"claude-3-7-sonnet-20250219":              {Major: 3, Minor: 7, Variant: "sonnet"},
+		"anthropic/claude-opus-4.6":               {Major: 4, Minor: 6, Variant: "opus"},
+		"claude-sonnet-4-5@20250929":              {Major: 4, Minor: 5, Variant: "sonnet"},
+		"claude-sonnet-4-20250514":                {Major: 4, Minor: 0, Variant: "sonnet"},
+		"us.anthropic.claude-fable-5-2-v1:0":      {Major: 5, Minor: 2, Variant: "fable"},
+		"claude-mythos-5-1":                       {Major: 5, Minor: 1, Variant: "mythos"},
+		"claude-mythos-preview":                   {Major: 5, Minor: 0, Variant: "mythos"},
+		"global.anthropic.claude-haiku-5-5-v1:0":  {Major: 5, Minor: 5, Variant: "haiku"},
+		"projects/p/models/claude-opus-4-8@00001": {Major: 4, Minor: 8, Variant: "opus"},
+	} {
+		if got, ok := ParseClaudeVersion(model); !ok || got != want {
+			t.Fatalf("ParseClaudeVersion(%q) = %#v, %v; want %#v", model, got, ok, want)
+		}
+	}
+	if _, ok := ParseClaudeVersion("gpt-5"); ok {
+		t.Fatal("a non-Claude model parsed")
+	}
 }
 
 func TestRetryableAndGenericErrorHelpers(t *testing.T) {
@@ -143,6 +166,35 @@ func TestRetryableAndGenericErrorHelpers(t *testing.T) {
 	}
 	if v := RetryableFromStatusAndMessage(0, "plain error"); v != nil {
 		t.Fatalf("plain retryable = %#v", v)
+	}
+	// Mirrors the TS client's transport abort and deadline-exceeded classification test.
+	for _, tc := range []struct {
+		code int
+		msg  string
+		want bool
+	}{
+		{0, "This operation was aborted", true},
+		{499, "This operation was aborted", true},
+		{400, "Deadline expired before operation could complete", true},
+		{504, "[504] DEADLINE_EXCEEDED", true},
+		{400, "Invalid argument", false},
+	} {
+		if v := RetryableFromStatusAndMessage(tc.code, tc.msg); v == nil || *v != tc.want {
+			t.Fatalf("RetryableFromStatusAndMessage(%d, %q) = %#v, want %v", tc.code, tc.msg, v, tc.want)
+		}
+	}
+	deadlineErr := FormatGenericError(fmt.Errorf("provider call: %w", context.DeadlineExceeded), LlumiverseErrorContext{Provider: ProviderOpenAI})
+	if v := deadlineErr.(*LlumiverseError).Retryable; v == nil || !*v {
+		t.Fatalf("deadline exceeded retryable = %#v", v)
+	}
+	// A caller's own cancellation is not classified.
+	canceledErr := FormatGenericError(context.Canceled, LlumiverseErrorContext{Provider: ProviderOpenAI})
+	if v := canceledErr.(*LlumiverseError).Retryable; v != nil {
+		t.Fatalf("context canceled retryable = %#v", v)
+	}
+	// Mirrors the TS client's invalid_grant classification test.
+	if v := RetryableFromStatusAndMessage(0, "Error code invalid_grant: Error connecting to the given credential's issuer."); v == nil || *v {
+		t.Fatalf("invalid_grant retryable = %#v", v)
 	}
 	err := FormatGenericError(assertionError("boom"), LlumiverseErrorContext{Provider: ProviderOpenAI, Model: "m", Operation: "execute"})
 	llumiErr, ok := err.(*LlumiverseError)

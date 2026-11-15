@@ -88,7 +88,7 @@ func TestExecuteWithPromptErrorPaths(t *testing.T) {
 	if _, err := ExecuteWithPrompt(context.Background(), driver, nil, ExecutionOptions{}, nil); err == nil || err.Error() != "model is required" {
 		t.Fatalf("missing model err = %v", err)
 	}
-	if _, err := ExecuteWithPrompt(context.Background(), &fakeDriver{err: errors.New("bad prompt")}, nil, ExecutionOptions{Model: "m"}, nil); err == nil || err.Error() != "bad prompt" {
+	if _, err := ExecuteWithPrompt(context.Background(), &fakeDriver{provider: ProviderBedrock, err: errors.New("bad prompt")}, nil, ExecutionOptions{Model: "m"}, nil); err == nil || err.Error() != "[bedrock] bad prompt" {
 		t.Fatalf("prompt err = %v", err)
 	}
 	if _, err := ExecuteWithPrompt(context.Background(), driver, nil, ExecutionOptions{Model: "m"}, func(context.Context, any, ExecutionOptions) (*Completion, error) {
@@ -152,5 +152,48 @@ func TestStreamWithPromptSetsPromptAndWrapsErrors(t *testing.T) {
 		return nil, nil
 	}); err == nil || err.Error() != "driver returned nil stream" {
 		t.Fatalf("nil stream err = %v", err)
+	}
+}
+
+// Mirrors the TS client's "AbstractDriver prompt creation errors" tests.
+func TestPromptCreationErrorsAreClassified(t *testing.T) {
+	t.Parallel()
+
+	segments := []PromptSegment{{Role: PromptRoleUser, Content: "prompt"}}
+	options := ExecutionOptions{Model: "test-model"}
+	driver := &fakeDriver{provider: ProviderVertexAI, err: errors.New("This model does not support tools")}
+	for _, operation := range []string{"execute", "stream"} {
+		var err error
+		if operation == "execute" {
+			_, err = ExecuteWithPrompt(context.Background(), driver, segments, options, nil)
+		} else {
+			_, err = StreamWithPrompt(context.Background(), driver, segments, options, nil)
+		}
+		var llumiErr *LlumiverseError
+		if !errors.As(err, &llumiErr) {
+			t.Fatalf("%s: err = %T %v", operation, err, err)
+		}
+		if llumiErr.Message != "[vertexai] This model does not support tools" {
+			t.Fatalf("%s: message = %q", operation, llumiErr.Message)
+		}
+		want := LlumiverseErrorContext{Provider: ProviderVertexAI, Model: "test-model", Operation: operation}
+		if llumiErr.Context != want {
+			t.Fatalf("%s: context = %#v", operation, llumiErr.Context)
+		}
+	}
+
+	// An error the driver already classified is kept.
+	classified := NewLlumiverseError("unsupported", BoolPtr(false), LlumiverseErrorContext{Provider: ProviderVertexAI, Model: "test-model", Operation: "execute"}, nil, 400, "")
+	if _, err := ExecuteWithPrompt(context.Background(), &fakeDriver{provider: ProviderVertexAI, err: classified}, segments, options, nil); !errors.Is(err, classified) {
+		t.Fatalf("classified err = %v", err)
+	}
+
+	// A cancellation keeps the caller's own error.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := ExecuteWithPrompt(ctx, &fakeDriver{provider: ProviderVertexAI, err: ctx.Err()}, segments, options, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled err = %v", err)
+	} else if _, ok := err.(*LlumiverseError); ok {
+		t.Fatalf("cancelled err was wrapped: %v", err)
 	}
 }

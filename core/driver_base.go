@@ -31,7 +31,7 @@ func executeWithPrompt(ctx context.Context, driver Driver, segments []PromptSegm
 	start := time.Now()
 	prompt, err := driver.CreatePrompt(ctx, segments, options)
 	if err != nil {
-		return nil, err
+		return nil, createPromptError(ctx, driver, options, "execute", err)
 	}
 	completion, err := fn(ctx, prompt, options)
 	if err != nil {
@@ -69,7 +69,7 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 	}
 	prompt, err := driver.CreatePrompt(ctx, segments, options)
 	if err != nil {
-		return nil, err
+		return nil, createPromptError(ctx, driver, options, "stream", err)
 	}
 	stream, err := fn(ctx, prompt, options)
 	if err != nil {
@@ -86,6 +86,10 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 	if stream == nil {
 		return nil, errors.New("driver returned nil stream")
 	}
+	if channel, ok := stream.(*channelStream); ok {
+		// Errors raised while finalizing the stream name the provider and model.
+		channel.errContext = LlumiverseErrorContext{Provider: driver.Provider(), Model: options.Model, Operation: "stream"}
+	}
 	if completion := stream.Completion(); completion != nil {
 		if completion.Prompt == nil {
 			completion.Prompt = prompt
@@ -95,15 +99,33 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 	return stream, nil
 }
 
+// createPromptError normalizes a failure to build the prompt like a failed request, the TS
+// client's createExecutionPrompt: a model that rejects the request while it is built (an
+// unsupported option, a missing input) reports a classified LlumiverseError instead of a bare
+// error callers can only treat as unknown. An error the driver already classified, and the
+// caller's own cancellation, are returned unchanged.
+func createPromptError(ctx context.Context, driver Driver, options ExecutionOptions, operation string, err error) error {
+	var llumiErr *LlumiverseError
+	if ctx.Err() != nil || errors.As(err, &llumiErr) {
+		return err
+	}
+	return formatGenericError(err, LlumiverseErrorContext{Provider: driver.Provider(), Model: options.Model, Operation: operation})
+}
+
 // formatGenericError wraps a provider error in a LlumiverseError, attaching the
 // request context, an extracted HTTP status/type name, and a retryability
 // classification derived from the status and message.
-func formatGenericError(err error, context LlumiverseErrorContext) error {
+func formatGenericError(err error, errContext LlumiverseErrorContext) error {
 	if err == nil {
 		return nil
 	}
 	code, name := errorStatusAndName(err)
-	return NewLlumiverseError(err.Error(), retryableFromStatusAndMessage(code, err.Error()), context, err, code, name)
+	retryable := retryableFromStatusAndMessage(code, err.Error())
+	if errors.Is(err, context.DeadlineExceeded) {
+		// An exceeded deadline is transient whatever the wrapping error says.
+		retryable = BoolPtr(true)
+	}
+	return NewLlumiverseError(err.Error(), retryable, errContext, err, code, name)
 }
 
 // statusCoder is implemented by errors that carry an HTTP status code, such as
@@ -139,6 +161,17 @@ func retryableFromStatusAndMessage(code int, msg string) *bool {
 	}
 	if strings.Contains(lower, "overload") || strings.Contains(lower, "throttl") {
 		return BoolPtr(true)
+	}
+	// A transport-level abort (dropped connection, request timeout) or an exceeded
+	// deadline is transient, even when the provider reports it under a 4xx status.
+	// A caller's own cancellation reads "context canceled" and stays unclassified.
+	if strings.Contains(lower, "aborted") || strings.Contains(lower, "deadline") {
+		return BoolPtr(true)
+	}
+	// Explicit auth failures are never retried, even without a numeric status
+	// (for example an OAuth invalid_grant from a credential's token issuer).
+	if strings.Contains(lower, "invalid_grant") || strings.Contains(lower, "credential's issuer") {
+		return BoolPtr(false)
 	}
 	if code == 408 || code == 429 || code == 529 || code >= 500 {
 		return BoolPtr(true)
@@ -226,12 +259,13 @@ func readAllString(rc io.ReadCloser) (string, error) {
 }
 
 // truncateForConversation shortens value to maxLen, appending an ellipsis when
-// it is cut. A non-positive maxLen disables truncation.
+// it is cut. A non-positive maxLen disables truncation. The cut never splits a
+// UTF-8 sequence.
 func truncateForConversation(value string, maxLen int) string {
 	if maxLen <= 0 || len(value) <= maxLen {
 		return value
 	}
-	return value[:maxLen] + "..."
+	return value[:runeBoundary(value, maxLen)] + "..."
 }
 
 // removeNilMapValues returns a copy of in with nil entries dropped, recursing into
