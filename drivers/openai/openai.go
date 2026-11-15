@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -140,6 +141,10 @@ func openAIUsage(prompt, completion, total, cached int64) *ExecutionTokenUsage {
 	}
 }
 
+// openAIUnsupportedEndpointPattern matches the model families served by
+// dedicated or legacy endpoints rather than text generation.
+var openAIUnsupportedEndpointPattern = regexp.MustCompile(`(?:^|[-_.:/])(?:embed|embeddings?|whisper|transcribe|audio|moderation|tts|realtime|babbage|davinci|computer[-_.:]use|sora)(?:[-_.:/]|$)`)
+
 // ListModels returns the endpoint's available models sorted by ID, marking
 // likely non-tool models as lacking tool support and normalizing the "system"
 // owner to "openai" for first-party OpenAI.
@@ -150,6 +155,12 @@ func (d *OpenAICompatibleDriver) ListModels(ctx context.Context, _ *ModelSearchP
 	}
 	models := make([]AIModel, 0, len(response.Data))
 	for _, model := range response.Data {
+		// Listing metadata does not describe execution capabilities, so only
+		// the dedicated and legacy endpoint families are left out on OpenAI;
+		// unknown future ids stay visible.
+		if d.Provider() == ProviderOpenAI && openAIUnsupportedEndpointPattern.MatchString(strings.ToLower(model.ID)) {
+			continue
+		}
 		owner := model.OwnedBy
 		if owner == "system" && d.Provider() == ProviderOpenAI {
 			owner = "openai"

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -112,6 +113,33 @@ func TestOpenAICompatibleListModels(t *testing.T) {
 	}
 	if len(models) != 2 || models[0].ID != "a" || models[1].ID != "b" {
 		t.Fatalf("models not sorted: %#v", models)
+	}
+}
+
+// Mirrors the TS model listing test: on OpenAI, dedicated and legacy endpoint
+// families are left out, and unknown ids stay visible.
+func TestOpenAIListModelsLeavesOutDedicatedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6"},{"id":"text-embedding-3-small"},{"id":"whisper-1"},{"id":"gpt-realtime"},{"id":"computer-use-preview"},{"id":"davinci-002"},{"id":"gpt-7-future"},{"id":"gpt-5.1-codex"}]}`))
+	}))
+	defer server.Close()
+	driver, err := NewOpenAIDriver(OpenAICompatibleOptions{APIKey: "k", Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := driver.ListModels(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	if got := strings.Join(ids, ","); got != "gpt-5.1-codex,gpt-5.6,gpt-7-future" {
+		t.Fatalf("models = %s", got)
 	}
 }
 
