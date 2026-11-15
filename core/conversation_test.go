@@ -3,6 +3,7 @@ package core
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // conversationTestMessage stands in for a provider message: drivers apply the cutoff to their own
@@ -69,5 +70,38 @@ func TestConversationTruncationCutoffKeepsRecentMessages(t *testing.T) {
 	}
 	if got := TruncateConversationText("abc", 0); got != "abc" {
 		t.Fatalf("zero cap = %q", got)
+	}
+}
+
+// Mirrors the TS client's "truncateLargeTextInConversation — surrogate safety" tests: Go strings
+// are UTF-8, so the boundary must not split a multi-byte sequence.
+func TestTruncateConversationTextKeepsValidUTF8(t *testing.T) {
+	t.Parallel()
+
+	const maxTokens = 10
+	maxChars := maxTokens * ConversationCharsPerToken
+	// The 4-byte emoji starts one byte before the cut, so a byte slice would split it.
+	input := strings.Repeat("a", maxChars-1) + "🎉" + strings.Repeat("b", 50)
+	if !utf8.ValidString(input) {
+		t.Fatal("source must be valid UTF-8")
+	}
+	out := TruncateConversationText(input, maxTokens)
+	if !utf8.ValidString(out) {
+		t.Fatalf("truncated text is not valid UTF-8: %q", out)
+	}
+	if out != strings.Repeat("a", maxChars-1)+ConversationTextTruncatedMarker {
+		t.Fatalf("truncated text = %q", out)
+	}
+
+	// Control: a cut between ASCII characters keeps the full budget.
+	out = TruncateConversationText(strings.Repeat("a", 200), maxTokens)
+	if !utf8.ValidString(out) || out != strings.Repeat("a", maxChars)+ConversationTextTruncatedMarker {
+		t.Fatalf("ASCII truncation = %q", out)
+	}
+
+	// The tool-call summary truncation has the same guarantee.
+	summary := TruncateForConversation("ab€cd", 3)
+	if !utf8.ValidString(summary) || summary != "ab..." {
+		t.Fatalf("TruncateForConversation = %q", summary)
 	}
 }

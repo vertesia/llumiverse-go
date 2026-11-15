@@ -1,6 +1,9 @@
 package core
 
-import "strings"
+import (
+	"strings"
+	"unicode/utf8"
+)
 
 const (
 	ConversationImagePlaceholder     = "[Image removed from conversation history]"
@@ -46,7 +49,7 @@ func ProcessConversationText(text string, options ExecutionOptions, stripHeartbe
 
 // TruncateConversationText cuts text to about maxTokens tokens (ConversationCharsPerToken
 // characters per token) and appends ConversationTextTruncatedMarker. A non-positive maxTokens
-// leaves text unchanged.
+// leaves text unchanged. The cut never splits a UTF-8 sequence, so the result stays valid UTF-8.
 func TruncateConversationText(text string, maxTokens int) string {
 	if maxTokens <= 0 {
 		return text
@@ -55,7 +58,17 @@ func TruncateConversationText(text string, maxTokens int) string {
 	if len(text) <= maxChars {
 		return text
 	}
-	return text[:maxChars] + ConversationTextTruncatedMarker
+	return text[:runeBoundary(text, maxChars)] + ConversationTextTruncatedMarker
+}
+
+// runeBoundary returns the largest index <= n that starts a rune in text, so text[:index] never
+// ends in a partial UTF-8 sequence. A split sequence encodes as U+FFFD, or is rejected outright by
+// strict JSON parsers (the TS client hit this with a split surrogate pair). n must be < len(text).
+func runeBoundary(text string, n int) int {
+	for n > 0 && !utf8.RuneStart(text[n]) {
+		n--
+	}
+	return n
 }
 
 // ConversationTruncationCutoff returns the index of the first message that keeps its full text

@@ -242,12 +242,13 @@ func readAllString(rc io.ReadCloser) (string, error) {
 }
 
 // truncateForConversation shortens value to maxLen, appending an ellipsis when
-// it is cut. A non-positive maxLen disables truncation.
+// it is cut. A non-positive maxLen disables truncation. The cut never splits a
+// UTF-8 sequence.
 func truncateForConversation(value string, maxLen int) string {
 	if maxLen <= 0 || len(value) <= maxLen {
 		return value
 	}
-	return value[:maxLen] + "..."
+	return value[:runeBoundary(value, maxLen)] + "..."
 }
 
 // removeNilMapValues returns a copy of in with nil entries dropped, recursing into
