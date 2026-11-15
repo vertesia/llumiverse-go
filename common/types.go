@@ -24,6 +24,11 @@ const (
 	ProviderBedrockMantle    Provider = "bedrock_mantle"
 	ProviderAzureFoundry     Provider = "azure_foundry"
 	ProviderAzureOpenAI      Provider = "azure_openai"
+	ProviderGroq             Provider = "groq"
+	ProviderMistralAI        Provider = "mistralai"
+	ProviderOpenRouter       Provider = "openrouter"
+	ProviderTogetherAI       Provider = "togetherai"
+	ProviderXAI              Provider = "xai"
 )
 
 // PromptRole is the provider-neutral role assigned to a prompt segment.

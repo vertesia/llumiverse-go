@@ -42,6 +42,15 @@ type ChatCompletionsProtocolOptions struct {
 	// CompatibleToolSchemas sends tool parameters as plain JSON Schema instead of
 	// OpenAI strict schemas, for providers that reject the strict fields.
 	CompatibleToolSchemas bool
+	// PreparePayload adapts the request body BuildPayload assembled to a
+	// provider's dialect (renamed fields, provider-only parameters, message
+	// restrictions). It runs last, before the transport sends the body; an error
+	// stops the request.
+	PreparePayload func(payload map[string]any, options ExecutionOptions, stream bool) error
+	// NormalizeResponse rewrites a provider's response body, or one stream chunk,
+	// into the OpenAI shape before it is parsed. An error ends the request, or
+	// the stream.
+	NormalizeResponse func(data []byte, options ExecutionOptions) ([]byte, error)
 }
 
 // ChatCompletionsTransport sends Chat Completions requests built by
@@ -229,8 +238,14 @@ func (p ChatCompletionsProtocol) Execute(ctx context.Context, transport ChatComp
 	if err != nil {
 		return nil, err
 	}
+	data := []byte(raw)
+	if p.Options.NormalizeResponse != nil {
+		if data, err = p.Options.NormalizeResponse(data, options); err != nil {
+			return nil, err
+		}
+	}
 	var response chatCompletionsResponse
-	if err := json.Unmarshal(raw, &response); err != nil {
+	if err := json.Unmarshal(data, &response); err != nil {
 		return nil, err
 	}
 	includeThoughts := chatIncludeThoughts(options)
@@ -299,8 +314,15 @@ func (p ChatCompletionsProtocol) Stream(ctx context.Context, transport ChatCompl
 			if event.Data == "" || event.Data == "[DONE]" {
 				return nil
 			}
+			data := []byte(event.Data)
+			if p.Options.NormalizeResponse != nil {
+				var err error
+				if data, err = p.Options.NormalizeResponse(data, options); err != nil {
+					return err
+				}
+			}
 			var decoded chatCompletionsResponse
-			if err := json.Unmarshal([]byte(event.Data), &decoded); err != nil {
+			if err := json.Unmarshal(data, &decoded); err != nil {
 				return err
 			}
 			out := state.chunk(decoded)
@@ -407,6 +429,11 @@ func (p ChatCompletionsProtocol) BuildPayload(messages []map[string]any, options
 		payload["response_format"] = map[string]any{
 			"type":        "json_schema",
 			"json_schema": map[string]any{"name": "output", "strict": strict, "schema": schema},
+		}
+	}
+	if p.Options.PreparePayload != nil {
+		if err := p.Options.PreparePayload(payload, options, stream); err != nil {
+			return nil, err
 		}
 	}
 	return payload, nil
