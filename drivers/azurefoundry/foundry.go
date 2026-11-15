@@ -549,7 +549,7 @@ func (d *AzureFoundryDriver) ValidateConnection(ctx context.Context) error {
 func (d *AzureFoundryDriver) FormatDebugPrompt(prompt any) any {
 	switch value := prompt.(type) {
 	case internalclaude.Prompt:
-		return claudeDebugPrompt(value)
+		return internalclaude.FormatDebugPrompt(value)
 	case chatPrompt:
 		return chatDebugPrompt(value)
 	}
@@ -557,33 +557,4 @@ func (d *AzureFoundryDriver) FormatDebugPrompt(prompt any) any {
 		return formatter.FormatDebugPrompt(prompt)
 	}
 	return prompt
-}
-
-// claudeDebugPrompt copies a Claude prompt with its base64 sources truncated.
-func claudeDebugPrompt(prompt internalclaude.Prompt) internalclaude.Prompt {
-	out := prompt
-	out.System = claudeDebugBlocks(prompt.System)
-	out.Messages = make([]internalclaude.Message, len(prompt.Messages))
-	for i, message := range prompt.Messages {
-		message.Content = claudeDebugBlocks(message.Content)
-		out.Messages[i] = message
-	}
-	return out
-}
-
-func claudeDebugBlocks(blocks []internalclaude.Block) []internalclaude.Block {
-	if blocks == nil {
-		return nil
-	}
-	out := make([]internalclaude.Block, len(blocks))
-	for i, block := range blocks {
-		if block.Source != nil && block.Source.Type == "base64" {
-			source := *block.Source
-			source.Data = truncateBinaryForDebug(source.Data)
-			block.Source = &source
-		}
-		block.Content = claudeDebugBlocks(block.Content)
-		out[i] = block
-	}
-	return out
 }

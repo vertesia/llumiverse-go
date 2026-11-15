@@ -2,7 +2,6 @@ package azurefoundry
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -23,79 +22,67 @@ func claudeOptions(r route, options ExecutionOptions) ExecutionOptions {
 	return options
 }
 
-// claudeRequest builds the Messages payload and headers of a Foundry Claude
-// request. The deployment name is the request model.
-func (d *AzureFoundryDriver) claudeRequest(ctx context.Context, conversation internalclaude.Prompt, r route, options ExecutionOptions, stream bool) (string, map[string]any, map[string]string, error) {
+// claudeRequest prepares a Foundry Claude request: the shared Claude request for
+// the source model, its body with the deployment name as the model, and the
+// auth, anthropic-version and anthropic-beta headers. Foundry is not one of the
+// platforms that take mid-conversation tool changes or native result schemas,
+// so it is named as itself, as in the TS client.
+func (d *AzureFoundryDriver) claudeRequest(ctx context.Context, prompt internalclaude.Prompt, r route, options ExecutionOptions, operation string) (string, *internalclaude.Request, map[string]any, map[string]string, error) {
 	endpoint, err := joinEndpoint(d.anthropic, "v1", "messages")
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
+	}
+	request, err := internalclaude.NewRequest(prompt, claudeOptions(r, options), internalclaude.RequestSettings{
+		Provider:  string(ProviderAzureFoundry),
+		Operation: operation,
+	})
+	if err != nil {
+		return "", nil, nil, nil, err
 	}
 	headers, err := d.creds.keyOrBearer(ctx, headerAnthropicKey)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	headers["anthropic-version"] = claudeAPIVersion
-	payload, headers, err := internalclaude.Payload(conversation, claudeOptions(r, options), stream, headers)
-	if err != nil {
-		return "", nil, nil, err
+	if beta := request.BetaHeader(); beta != "" {
+		headers["anthropic-beta"] = beta
 	}
-	payload["model"] = r.deployment
-	return endpoint, payload, headers, nil
+	body := make(map[string]any, len(request.Body)+2)
+	for key, value := range request.Body {
+		body[key] = value
+	}
+	body["model"] = r.deployment
+	if operation == "stream" {
+		body["stream"] = true
+	}
+	return endpoint, request, body, headers, nil
 }
 
 // requestClaude runs a non-streaming Claude Messages request.
 func (d *AzureFoundryDriver) requestClaude(ctx context.Context, prompt internalclaude.Prompt, r route, options ExecutionOptions) (*Completion, error) {
-	conversation := internalclaude.ConversationInput(options.Conversation, prompt)
-	endpoint, payload, headers, err := d.claudeRequest(ctx, conversation, r, options, false)
+	endpoint, request, body, headers, err := d.claudeRequest(ctx, prompt, r, options, "execute")
 	if err != nil {
 		return nil, err
 	}
 	var response internalclaude.Response
-	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, payload, &response); err != nil {
+	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, body, &response); err != nil {
 		return nil, d.formatClaudeError(err, options.Model, "execute")
 	}
-	sourceOptions := claudeOptions(r, options)
-	completion := internalclaude.ExtractCompletion(response, sourceOptions)
-	completion.Conversation = internalclaude.FinalizeConversation(internalclaude.AppendResponseToConversation(conversation, response), sourceOptions)
-	return completion, nil
+	return request.Complete(response), nil
 }
 
 // streamClaude runs a streaming Claude Messages request.
 func (d *AzureFoundryDriver) streamClaude(ctx context.Context, prompt internalclaude.Prompt, r route, options ExecutionOptions) (CompletionStream, error) {
-	conversation := internalclaude.ConversationInput(options.Conversation, prompt)
-	endpoint, payload, headers, err := d.claudeRequest(ctx, conversation, r, options, true)
+	endpoint, request, body, headers, err := d.claudeRequest(ctx, prompt, r, options, "stream")
 	if err != nil {
 		return nil, err
 	}
-	body, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
+	sse, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, body)
 	if err != nil {
 		return nil, d.formatClaudeError(err, options.Model, "stream")
 	}
-	sourceOptions := claudeOptions(r, options)
-	ch, send, closeFn := newStreamChannel(body)
-	go func() {
-		defer close(ch)
-		err := scanSSE(body, func(event sseEvent) error {
-			if event.Data == "" {
-				return nil
-			}
-			var envelope map[string]json.RawMessage
-			if err := json.Unmarshal([]byte(event.Data), &envelope); err != nil {
-				return err
-			}
-			chunk := internalclaude.SSEToChunk(envelope, sourceOptions)
-			if hasChunkContent(chunk) && !send(streamItem{Chunk: chunk}) {
-				return errStreamClosed
-			}
-			return nil
-		})
-		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, errStreamClosed) {
-			send(streamItem{Err: d.formatClaudeError(err, options.Model, "stream")})
-		}
-	}()
-	completion := &ExecutionResponse{Prompt: prompt}
-	return newChannelStreamWithFinalizer(ch, completion, closeFn, func(resp *ExecutionResponse) {
-		resp.Conversation = internalclaude.FinalizeConversation(internalclaude.BuildStreamingConversation(conversation, &resp.Completion), sourceOptions)
+	return request.Stream(prompt, internalclaude.SSEEvents(sse), sse.Close, func(err error) error {
+		return d.formatClaudeError(err, options.Model, "stream")
 	}), nil
 }
 

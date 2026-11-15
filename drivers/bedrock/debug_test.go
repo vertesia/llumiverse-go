@@ -12,6 +12,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/vertesia/llumiverse-go/core"
+	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
 )
 
 // Mirrors the TS debug-prompt tests for the Converse prompt: inline bytes are
@@ -88,5 +89,23 @@ func TestBedrockFormatDebugPromptImageGenerationAndOtherPrompts(t *testing.T) {
 	other := map[string]any{"messages": []any{}}
 	if got := driver.FormatDebugPrompt(other); !reflect.DeepEqual(got, other) {
 		t.Fatalf("other prompt = %#v", got)
+	}
+}
+
+func TestBedrockFormatDebugPromptTruncatesClaudeMessages(t *testing.T) {
+	driver := NewBedrockDriverWithClient(BedrockOptions{Region: "us-east-1"}, &fakeBedrockRuntime{}, nil)
+	raw := strings.Repeat("A", 200)
+	prompt := bedrockClaudePrompt{Messages: []internalclaude.Message{{Role: "user", Content: []internalclaude.Block{
+		{Type: "image", Source: &internalclaude.Source{Type: "base64", MediaType: "image/png", Data: raw}},
+	}}}}
+	debug, ok := driver.FormatDebugPrompt(prompt).(bedrockClaudePrompt)
+	if !ok {
+		t.Fatalf("debug prompt type = %T", driver.FormatDebugPrompt(prompt))
+	}
+	if got := debug.Messages[0].Content[0].Source.Data; got != core.TruncateBinaryForDebug(raw) {
+		t.Fatalf("debug image data = %q", got)
+	}
+	if prompt.Messages[0].Content[0].Source.Data != raw {
+		t.Fatal("Claude prompt modified")
 	}
 }

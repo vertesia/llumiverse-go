@@ -6,6 +6,7 @@ import (
 
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/vertesia/llumiverse-go/core"
+	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
 )
 
 // FormatDebugPrompt returns a copy of a Bedrock prompt that is safe to return
@@ -17,6 +18,8 @@ import (
 // and prompts of any other type are returned unchanged.
 func (d *BedrockDriver) FormatDebugPrompt(prompt any) any {
 	switch value := prompt.(type) {
+	case bedrockClaudePrompt:
+		return internalclaude.FormatDebugPrompt(value)
 	case bedrockPrompt:
 		return bedrockDebugPrompt(value)
 	case *bedrockPrompt:

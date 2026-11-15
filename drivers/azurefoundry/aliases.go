@@ -76,7 +76,6 @@ var (
 	shouldStripConversationHeartbeats = core.ShouldStripConversationHeartbeats
 	processConversationText           = core.ProcessConversationText
 	truncateDataURLForDebug           = core.TruncateDataURLForDebug
-	truncateBinaryForDebug            = core.TruncateBinaryForDebug
 	optionFloat                       = core.OptionFloat
 	optionInt                         = core.OptionInt
 	optionString                      = core.OptionString

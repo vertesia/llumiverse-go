@@ -215,8 +215,8 @@ func bedrockClaudeOptions(options ExecutionOptions) ExecutionOptions {
 	return out
 }
 
-// bedrockServiceTier is the service_tier model option as the InvokeModel field.
-func bedrockServiceTier(options ExecutionOptions) brtypes.ServiceTierType {
+// bedrockClaudeServiceTier is the service_tier model option as the InvokeModel field.
+func bedrockClaudeServiceTier(options ExecutionOptions) brtypes.ServiceTierType {
 	return brtypes.ServiceTierType(optionString(options.ModelOptions, "service_tier"))
 }
 
@@ -257,7 +257,7 @@ func (d *BedrockDriver) requestClaudeMessages(ctx context.Context, prompt bedroc
 		Body:        body,
 		ContentType: aws.String("application/json"),
 		Accept:      aws.String("application/json"),
-		ServiceTier: bedrockServiceTier(options),
+		ServiceTier: bedrockClaudeServiceTier(options),
 	}, d.runtimeOptions(options.HTTPTimeout)...)
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
@@ -286,7 +286,7 @@ func (d *BedrockDriver) requestClaudeMessagesStream(ctx context.Context, prompt 
 		Body:        body,
 		ContentType: aws.String("application/json"),
 		Accept:      aws.String("application/json"),
-		ServiceTier: bedrockServiceTier(options),
+		ServiceTier: bedrockClaudeServiceTier(options),
 	}, d.runtimeOptions(options.HTTPTimeout)...)
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "stream")
