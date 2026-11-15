@@ -640,7 +640,9 @@ func mergeBedrockMessages(messages []brtypes.Message) []brtypes.Message {
 	for _, msg := range messages[1:] {
 		last := &out[len(out)-1]
 		if last.Role == msg.Role {
-			last.Content = append(last.Content, msg.Content...)
+			// Copy before appending so the merged turn never writes into the
+			// content of a message the caller still holds.
+			last.Content = append(append([]brtypes.ContentBlock(nil), last.Content...), msg.Content...)
 		} else {
 			out = append(out, msg)
 		}
@@ -878,9 +880,11 @@ func bedrockConversationInput(conversation any, prompt bedrockPrompt) bedrockPro
 		out.System = prompt.System
 	}
 	// Repair both orphan directions: an unanswered toolUse gets a synthetic
-	// result, and a toolResult whose toolUse is gone is dropped. Dropping a whole
-	// message can leave two same-role messages adjacent, so merge again.
-	out.Messages = mergeBedrockMessages(fixBedrockOrphanedToolResults(fixBedrockOrphanedToolUse(mergeBedrockMessages(append(out.Messages, prompt.Messages...)))))
+	// result, and a toolResult whose toolUse is gone is dropped. Both compare
+	// adjacent messages, so empty turns (for example one already stored) are
+	// removed first; the final pass merges what the repairs leave adjacent.
+	combined := append(append([]brtypes.Message(nil), out.Messages...), prompt.Messages...)
+	out.Messages = sanitizeBedrockMessages(fixBedrockOrphanedToolResults(fixBedrockOrphanedToolUse(sanitizeBedrockMessages(combined))))
 	return out
 }
 
@@ -1223,11 +1227,11 @@ func appendBedrockResponseToConversation(prompt bedrockPrompt, output *bedrockru
 }
 
 // appendBedrockAssistantMessage appends an assistant turn to the conversation.
-// A turn without content is not stored.
+// A turn without content, or with only blank text (for example after a
+// content_filtered stop), is not stored: Converse rejects it on every later
+// request.
 func appendBedrockAssistantMessage(prompt bedrockPrompt, message brtypes.Message) bedrockPrompt {
-	if len(message.Content) > 0 {
-		prompt.Messages = mergeBedrockMessages(append(prompt.Messages, message))
-	}
+	prompt.Messages = sanitizeBedrockMessages(append(append([]brtypes.Message(nil), prompt.Messages...), message))
 	return prompt
 }
 

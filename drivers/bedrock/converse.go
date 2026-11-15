@@ -52,6 +52,32 @@ func fixBedrockOrphanedToolResults(messages []brtypes.Message) []brtypes.Message
 	return out
 }
 
+// sanitizeBedrockMessages removes what Converse rejects outright: blank text
+// blocks and messages left with no content. A response the model ends without
+// output (a content_filtered stop, say) would otherwise be stored as an empty
+// assistant turn and fail every later request. Dropping a message can leave two
+// same-role messages adjacent, so they are merged afterwards.
+func sanitizeBedrockMessages(messages []brtypes.Message) []brtypes.Message {
+	kept := make([]brtypes.Message, 0, len(messages))
+	for _, message := range messages {
+		content := make([]brtypes.ContentBlock, 0, len(message.Content))
+		for _, block := range message.Content {
+			if text, ok := block.(*brtypes.ContentBlockMemberText); ok && strings.TrimSpace(text.Value) == "" {
+				continue
+			}
+			content = append(content, block)
+		}
+		if len(content) == 0 {
+			continue
+		}
+		if len(content) != len(message.Content) {
+			message.Content = content
+		}
+		kept = append(kept, message)
+	}
+	return mergeBedrockMessages(kept)
+}
+
 // bedrockSupportsConverseOutputConfig reports whether a Converse model family
 // accepts native structured output (outputConfig.textFormat json_schema). The
 // families listed reject it and keep the schema in the prompt; a new family
