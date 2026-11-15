@@ -63,6 +63,8 @@ type VertexAIOptions = vertexdriver.VertexAIOptions
 type VertexAIDriver = vertexdriver.VertexAIDriver
 type AzureFoundryOptions = azuredriver.AzureFoundryOptions
 type AzureFoundryDriver = azuredriver.AzureFoundryDriver
+type AzureOpenAIOptions = azuredriver.AzureOpenAIOptions
+type AzureOpenAIDriver = azuredriver.AzureOpenAIDriver
 type AzureTokenProvider = azuredriver.TokenProvider
 
 const (
@@ -150,6 +152,11 @@ func NewVertexAIDriver(options VertexAIOptions) (*VertexAIDriver, error) {
 // NewAzureFoundryDriver creates a Microsoft Foundry driver.
 func NewAzureFoundryDriver(options AzureFoundryOptions) (*AzureFoundryDriver, error) {
 	return azuredriver.NewAzureFoundryDriver(options)
+}
+
+// NewAzureOpenAIDriver creates an Azure OpenAI driver on the v1 API.
+func NewAzureOpenAIDriver(options AzureOpenAIOptions) (*AzureOpenAIDriver, error) {
+	return azuredriver.NewAzureOpenAIDriver(options)
 }
 
 // BoolPtr returns a pointer to v for option fields that distinguish false from unset.
