@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/vertesia/llumiverse-go/core"
+	"github.com/vertesia/llumiverse-go/wire"
 )
 
 // responseItem is one Responses API input item in its JSON shape. Items are kept
@@ -421,6 +422,7 @@ type responsesResponse struct {
 	IncompleteDetails *responsesIncompleteDetails `json:"incomplete_details"`
 	Output            []responsesOutputItem       `json:"output"`
 	Usage             *responsesUsage             `json:"usage"`
+	ToolUsage         *responsesToolUsage         `json:"tool_usage"`
 	ServiceTier       string                      `json:"service_tier"`
 }
 
@@ -499,8 +501,60 @@ type responsesUsage struct {
 
 // responsesInputTokenInfo details the input tokens of a response.
 type responsesInputTokenInfo struct {
-	CachedTokens     *int64 `json:"cached_tokens"`
-	CacheWriteTokens *int64 `json:"cache_write_tokens"`
+	CachedTokens            *int64 `json:"cached_tokens"`
+	CacheWriteTokens        *int64 `json:"cache_write_tokens"`
+	CacheWriteTokensDetails *struct {
+		TTL12HTokens int64 `json:"ttl_12h_tokens"`
+	} `json:"cache_write_tokens_details"`
+}
+
+// responsesToolUsage is the usage of hosted tools, reported apart from the
+// model's (response.tool_usage).
+type responsesToolUsage struct {
+	ImageGen *struct {
+		InputTokens        int64  `json:"input_tokens"`
+		OutputTokens       int64  `json:"output_tokens"`
+		TotalTokens        int64  `json:"total_tokens"`
+		CachedTokens       *int64 `json:"cached_tokens"`
+		OutputTokensDetail *struct {
+			ImageTokens int64 `json:"image_tokens"`
+		} `json:"output_tokens_details"`
+	} `json:"image_gen"`
+	WebSearch *struct {
+		NumRequests int64 `json:"num_requests"`
+	} `json:"web_search"`
+}
+
+// openAIToolUsage maps hosted tool usage; tools that report zero use are left out.
+func openAIToolUsage(usage *responsesToolUsage) *wire.ToolUsage {
+	if usage == nil {
+		return nil
+	}
+	image := usage.ImageGen
+	imageUsed := image != nil && (image.TotalTokens > 0 || image.InputTokens > 0 || image.OutputTokens > 0)
+	searches := int64(0)
+	if usage.WebSearch != nil {
+		searches = usage.WebSearch.NumRequests
+	}
+	if !imageUsed && searches == 0 {
+		return nil
+	}
+	out := &wire.ToolUsage{}
+	if imageUsed {
+		generation := &wire.ToolTokenUsage{Prompt: tokens(int(image.InputTokens)), Result: tokens(int(image.OutputTokens)), Total: tokens(int(image.TotalTokens))}
+		// An omitted cache count means the cache use is unknown, so it stays omitted.
+		if image.CachedTokens != nil {
+			generation.PromptCached = tokens(int(*image.CachedTokens))
+		}
+		if image.OutputTokensDetail != nil {
+			generation.ResultImage = tokens(int(image.OutputTokensDetail.ImageTokens))
+		}
+		out.ImageGeneration = generation
+	}
+	if searches > 0 {
+		out.WebSearchRequests = tokens(int(searches))
+	}
+	return out
 }
 
 // extractOpenAIResponseCompletion maps a Responses output into a Completion,
@@ -513,7 +567,7 @@ func extractOpenAIResponseCompletion(response *responsesResponse, includeThought
 	tools := openAIResponseToolUses(response.Output)
 	completion := &Completion{
 		Result:       result,
-		TokenUsage:   openAIResponseUsage(response.Usage),
+		TokenUsage:   openAIResponseUsage(response.Usage, response.ToolUsage),
 		ToolUse:      tools,
 		FinishReason: openAIResponseFinishReason(response, len(tools) > 0),
 		ServiceTier:  response.ServiceTier,
@@ -582,8 +636,14 @@ func openAIResponseToolUses(output []responsesOutputItem) []ToolUse {
 // openAIResponseUsage normalizes Responses token usage, returning nil when
 // empty. Cache reads and writes are read from input_tokens_details, then from
 // the prompt_tokens_details or top-level fields some compatible endpoints use.
-func openAIResponseUsage(usage *responsesUsage) *ExecutionTokenUsage {
+func openAIResponseUsage(usage *responsesUsage, toolUsage *responsesToolUsage) *ExecutionTokenUsage {
+	tools := openAIToolUsage(toolUsage)
 	if usage == nil || (usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens == 0) {
+		// Hosted tools are billed apart from the model, so their usage is kept
+		// even when the model usage is missing.
+		if tools != nil {
+			return &ExecutionTokenUsage{ToolUsage: tools}
+		}
 		return nil
 	}
 	pick := func(get func(*responsesInputTokenInfo) *int64, top *int64) *int64 {
@@ -599,8 +659,12 @@ func openAIResponseUsage(usage *responsesUsage) *ExecutionTokenUsage {
 	cached := pick(func(d *responsesInputTokenInfo) *int64 { return d.CachedTokens }, usage.CachedTokens)
 	cacheWrite := pick(func(d *responsesInputTokenInfo) *int64 { return d.CacheWriteTokens }, usage.CacheWriteTokens)
 	out := openAIPromptUsage(usage.InputTokens, cached, cacheWrite)
+	if details := usage.InputTokensDetails; details != nil && details.CacheWriteTokensDetails != nil && details.CacheWriteTokensDetails.TTL12HTokens > 0 {
+		out.PromptCacheWrite12H = tokens(int(details.CacheWriteTokensDetails.TTL12HTokens))
+	}
 	out.Result = tokens(int(usage.OutputTokens))
 	out.Total = tokens(int(usage.TotalTokens))
+	out.ToolUsage = tools
 	return out
 }
 
@@ -738,7 +802,7 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (Completi
 		tools := openAIResponseToolUses(event.Response.Output)
 		return CompletionChunk{
 			FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0),
-			TokenUsage:   openAIResponseUsage(event.Response.Usage),
+			TokenUsage:   openAIResponseUsage(event.Response.Usage, event.Response.ToolUsage),
 			ServiceTier:  event.Response.ServiceTier,
 		}, nil
 	}

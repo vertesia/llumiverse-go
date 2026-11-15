@@ -82,7 +82,7 @@ func TestOpenAIResponsesUsageReadsCacheWrites(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"input_tokens":10,"output_tokens":2,"total_tokens":12,"prompt_tokens_details":{"cached_tokens":3,"cache_write_tokens":4}}`), &usage); err != nil {
 		t.Fatal(err)
 	}
-	got := openAIResponseUsage(&usage)
+	got := openAIResponseUsage(&usage, nil)
 	if count(got.PromptCached) != 3 || count(got.PromptCacheWrite) != 4 || count(got.PromptNew) != 3 {
 		t.Fatalf("usage = %#v", got)
 	}
