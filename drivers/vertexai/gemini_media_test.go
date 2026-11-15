@@ -178,3 +178,22 @@ func TestGeminiConversationDropsExpiredToolResultMedia(t *testing.T) {
 		t.Fatalf("media = %#v", media)
 	}
 }
+
+// TestGeminiUserPromptPassesGCSByURI mirrors e1beebb and "passes GCS audio on a
+// user prompt as fileData without reading or signing it": Cloud Storage files on
+// a user turn become fileData parts and are never read.
+func TestGeminiUserPromptPassesGCSByURI(t *testing.T) {
+	t.Parallel()
+
+	driver := newTestVertexDriver(t, "")
+	prompt, err := driver.formatGeminiPrompt(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "Transcribe", Files: []DataSource{
+		gcsSource{t: t, uri: "gs://bucket/recording.mp3", mime: "audio/mpeg"},
+		gcsSource{t: t, uri: "https://storage.googleapis.com/bucket/photo.png", mime: "image/png"},
+	}}}, ExecutionOptions{Model: "gemini-2.5-flash"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := mustJSON(t, prompt.Contents); got != `[{"role":"user","parts":[{"text":"Transcribe"},{"fileData":{"mimeType":"audio/mpeg","fileUri":"gs://bucket/recording.mp3"}},{"fileData":{"mimeType":"image/png","fileUri":"https://storage.googleapis.com/bucket/photo.png"}}]}]` {
+		t.Fatalf("contents = %s", got)
+	}
+}

@@ -86,6 +86,21 @@ func TestGeminiSamplingRestriction(t *testing.T) {
 	}
 }
 
+// TestGeminiSendsNoDefaultSampling mirrors 1d8ded7: without caller options no
+// temperature, topP, topK or output cap is invented for any model.
+func TestGeminiSendsNoDefaultSampling(t *testing.T) {
+	t.Parallel()
+
+	for _, model := range []string{"gemini-2.5-flash", "gemini-2.5-pro", "gemini-3.7-flash", "gemini-4-argon"} {
+		config := (&VertexAIDriver{}).geminiPayload(geminiPrompt{}, ExecutionOptions{Model: model})["generationConfig"].(map[string]any)
+		for _, key := range []string{"temperature", "topP", "topK", "maxOutputTokens", "presencePenalty", "frequencyPenalty", "seed"} {
+			if value, ok := config[key]; ok {
+				t.Errorf("%s: default %s = %#v", model, key, value)
+			}
+		}
+	}
+}
+
 // TestGeminiNanoBananaImageRequest mirrors the Nano Banana payload cases of
 // gemini-conversation-mutation.test.ts.
 func TestGeminiNanoBananaImageRequest(t *testing.T) {
