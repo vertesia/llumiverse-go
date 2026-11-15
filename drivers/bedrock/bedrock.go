@@ -708,9 +708,15 @@ func (d *BedrockDriver) Execute(ctx context.Context, segments []PromptSegment, o
 	return executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
 }
 
-// Stream runs a Bedrock ConverseStream request and emits normalized chunks.
+// Stream runs a Bedrock ConverseStream request and emits normalized chunks. A
+// stream left unread for DriverOptions.StreamStartTimeout is closed, so an
+// abandoned stream releases its connection.
 func (d *BedrockDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	return streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	if err != nil {
+		return nil, err
+	}
+	return leaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // requestTextCompletion issues a single Converse call (or image generation),
