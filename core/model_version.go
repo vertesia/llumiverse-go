@@ -6,41 +6,51 @@ import (
 	"strings"
 )
 
-// claudeVersion is a parsed Claude model version: the major/minor release
-// numbers and the family variant ("opus", "sonnet", or "haiku").
-type claudeVersion struct {
+// ClaudeVersion is a parsed Claude model version: the major/minor release
+// numbers and the model family ("opus", "sonnet", "haiku", "fable", or "mythos").
+type ClaudeVersion struct {
 	Major   int
 	Minor   int
 	Variant string
 }
 
 var (
-	// claudeVariantVersionPattern matches variant-first names like claude-sonnet-4-6.
-	claudeVariantVersionPattern = regexp.MustCompile(`(?i)claude-(opus|sonnet|haiku)-?(\d+)(?:-(\d{1,2}))?(?:-|$)`)
+	// claudeMythosPreviewPattern matches the Mythos Preview model, which carries no version and is Mythos 5.0.
+	claudeMythosPreviewPattern = regexp.MustCompile(`(?i)claude-mythos-preview(?:-|\b)`)
+	// claudeVariantVersionPattern matches family-first names like claude-sonnet-4-6, or
+	// claude-opus-4.6 as aggregators write them. The minor version has at most two digits so a
+	// date snapshot is not read as one.
+	claudeVariantVersionPattern = regexp.MustCompile(`(?i)claude-(opus|sonnet|haiku|fable|mythos)-?(\d+)(?:[-.](\d{1,2}))?(?:-|\b)`)
 	// claudeLegacyVersionPattern matches legacy names like claude-3-7-sonnet.
-	claudeLegacyVersionPattern = regexp.MustCompile(`(?i)claude-(\d+)-(\d+)-(\w+)`)
+	claudeLegacyVersionPattern = regexp.MustCompile(`(?i)claude-(\d+)[-.](\d+)-(opus|sonnet|haiku|fable|mythos)(?:-|\b)`)
 )
 
-// parseClaudeVersion extracts the version from a Claude model id, trying the
-// variant-first naming scheme first and then the legacy scheme. The bool
-// reports whether the name matched a known pattern.
-func parseClaudeVersion(model string) (claudeVersion, bool) {
-	// Anthropic and Bedrock use both legacy names like claude-3-7-sonnet and
-	// newer variant-first names like claude-sonnet-4-6.
+// ParseClaudeVersion extracts the version and family from a Claude model ID, the TS client's
+// parseClaudeVersion: family-first names (claude-sonnet-4-6, claude-opus-4.6) first, then legacy
+// names (claude-3-7-sonnet-20250219). Mythos Preview is Mythos 5.0. Drivers route Claude features
+// on the family and version rather than on model ID lists. The bool reports whether the ID parsed.
+func ParseClaudeVersion(model string) (ClaudeVersion, bool) {
+	return parseClaudeVersion(model)
+}
+
+func parseClaudeVersion(model string) (ClaudeVersion, bool) {
+	if claudeMythosPreviewPattern.MatchString(model) {
+		return ClaudeVersion{Major: 5, Minor: 0, Variant: "mythos"}, true
+	}
 	if match := claudeVariantVersionPattern.FindStringSubmatch(model); len(match) == 4 {
 		major, _ := strconv.Atoi(match[2])
 		minor := 0
 		if match[3] != "" {
 			minor, _ = strconv.Atoi(match[3])
 		}
-		return claudeVersion{Major: major, Minor: minor, Variant: strings.ToLower(match[1])}, true
+		return ClaudeVersion{Major: major, Minor: minor, Variant: strings.ToLower(match[1])}, true
 	}
 	if match := claudeLegacyVersionPattern.FindStringSubmatch(model); len(match) == 4 {
 		major, _ := strconv.Atoi(match[1])
 		minor, _ := strconv.Atoi(match[2])
-		return claudeVersion{Major: major, Minor: minor, Variant: strings.ToLower(match[3])}, true
+		return ClaudeVersion{Major: major, Minor: minor, Variant: strings.ToLower(match[3])}, true
 	}
-	return claudeVersion{}, false
+	return ClaudeVersion{}, false
 }
 
 // isClaudeVersionGTE reports whether the model's version is at least
