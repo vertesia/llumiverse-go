@@ -17,6 +17,7 @@ import (
 	bedrockruntime "github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go"
 )
 
 // Bedrock defaults to Nova multimodal embeddings, matching the TypeScript client.
@@ -2800,21 +2801,46 @@ func isBedrockImageModel(model string) bool {
 }
 
 // formatError wraps an AWS API error as a LlumiverseError with provider/model/
-// operation context and a computed retryable flag; non-API errors pass through.
+// operation context, the HTTP status as its code and a computed retryable flag;
+// non-API errors pass through. The message names the exception, the status and
+// the request ID, as in "[bedrock] Name: [400] message (Request ID: id)", so a
+// caller can tell rejected credentials or a missing permission apart.
 func (d *BedrockDriver) formatError(err error, model string, operation string) error {
-	var apiErr interface {
-		ErrorCode() string
-		ErrorMessage() string
-		ErrorFault() string
+	var apiErr smithy.APIError
+	if !errors.As(err, &apiErr) {
+		return err
 	}
-	if errors.As(err, &apiErr) {
-		return newLlumiverseError(apiErr.ErrorMessage(), bedrockRetryable(apiErr.ErrorCode(), 0, apiErr.ErrorFault()), LlumiverseErrorContext{
-			Provider:  ProviderBedrock,
-			Model:     model,
-			Operation: operation,
-		}, err, 0, apiErr.ErrorCode())
+	status := 0
+	var statusErr interface{ HTTPStatusCode() int }
+	if errors.As(err, &statusErr) {
+		status = statusErr.HTTPStatusCode()
 	}
-	return err
+	requestID := ""
+	var requestErr interface{ ServiceRequestID() string }
+	if errors.As(err, &requestErr) {
+		requestID = requestErr.ServiceRequestID()
+	}
+	name := apiErr.ErrorCode()
+	return newLlumiverseError(bedrockErrorMessage(name, status, apiErr.ErrorMessage(), requestID), bedrockRetryable(name, status, apiErr.ErrorFault().String()), LlumiverseErrorContext{
+		Provider:  ProviderBedrock,
+		Model:     model,
+		Operation: operation,
+	}, err, status, name)
+}
+
+// bedrockErrorMessage formats a Bedrock API error message as the TS client does.
+func bedrockErrorMessage(name string, status int, message string, requestID string) string {
+	text := message
+	if status != 0 {
+		text = fmt.Sprintf("[%d] %s", status, text)
+	}
+	if name != "" && name != "Error" && name != "UnknownError" {
+		text = name + ": " + text
+	}
+	if requestID != "" {
+		text += " (Request ID: " + requestID + ")"
+	}
+	return text
 }
 
 // bedrockRetryable decides whether a Bedrock error is retryable from its

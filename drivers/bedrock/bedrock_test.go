@@ -17,6 +17,7 @@ import (
 	bedrockruntime "github.com/aws/aws-sdk-go-v2/service/bedrockruntime"
 	brdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
+	"github.com/aws/smithy-go"
 	"github.com/vertesia/llumiverse-go/common"
 )
 
@@ -1446,8 +1447,14 @@ func (e fakeBedrockAPIError) ErrorMessage() string {
 	return e.message
 }
 
-func (e fakeBedrockAPIError) ErrorFault() string {
-	return e.fault
+func (e fakeBedrockAPIError) ErrorFault() smithy.ErrorFault {
+	switch e.fault {
+	case "server":
+		return smithy.FaultServer
+	case "client":
+		return smithy.FaultClient
+	}
+	return smithy.FaultUnknown
 }
 
 // modalityString returns the embedding output modality, or "" when it is unset.
