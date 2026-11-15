@@ -131,7 +131,7 @@ func TestChatResultSchemaUsesResponseFormatAndInstruction(t *testing.T) {
 		return true
 	}
 	driver := newKeyDriver(t, f, nil)
-	schema := map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}}
+	schema := map[string]any{"type": "object", "properties": map[string]any{"answer": map[string]any{"type": "string"}}, "required": []any{"answer"}, "additionalProperties": false}
 	resp, err := driver.Execute(context.Background(), helloSegments, ExecutionOptions{Model: "mistral::mistral-large", ResultSchema: schema})
 	if err != nil {
 		t.Fatal(err)
