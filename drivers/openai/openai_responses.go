@@ -24,6 +24,10 @@ type responseItem = map[string]any
 type openAIResponsesPrompt struct {
 	Items []responseItem
 	Text  string
+	// Images and Masks are the reference images and mask images of the prompt,
+	// for image generation and edits.
+	Images []DataSource `json:"-"`
+	Masks  []DataSource `json:"-"`
 }
 
 // createResponsesPrompt builds the ordered Responses input items from prompt
@@ -33,6 +37,7 @@ type openAIResponsesPrompt struct {
 // segments require a ToolUseID.
 func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (openAIResponsesPrompt, error) {
 	prompt := openAIResponsesPrompt{}
+	prompt.Images, prompt.Masks = openAIImageInputs(segments)
 	var system []responseItem
 	var others []responseItem
 	systemRole := openAIResponsesSystemRole(options.Model)
@@ -235,7 +240,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 	if options.CompactConversation != nil {
 		return d.compactOpenAIConversation(ctx, input, options, "execute")
 	}
-	payload, err := d.responsePayload(input, options, false)
+	payload, err := d.responsePayload(ctx, input, rp.Masks, options, false)
 	if err != nil {
 		return nil, err
 	}
@@ -251,7 +256,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 	if response.Status == "failed" {
 		return nil, openAIResponseFailure(&response, errContext)
 	}
-	completion := extractOpenAIResponseCompletion(&response, openAIIncludeThoughts(options))
+	completion := extractOpenAIResponseCompletion(&response, openAIIncludeThoughts(options), openAIRequestedImageFormat(options.ModelOptions))
 	// A cut-off stop with nothing left to return is still a valid result: the
 	// stop is what the caller needs.
 	if len(completion.Result) == 0 && len(completion.ToolUse) == 0 && !core.IsCutOffFinishReason(completion.FinishReason) {
@@ -271,10 +276,12 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 // the stream completes.
 func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Context, prompt any, options ExecutionOptions) (CompletionStream, error) {
 	rp := prompt.(openAIResponsesPrompt)
-	// Image generation models use the Images API path and do not stream through
-	// Responses; callers should use Execute for those models.
 	if err := d.assertOpenAIConversationShape(options, "stream"); err != nil {
 		return nil, err
+	}
+	// Image generation models use the Images API, returned as one chunk.
+	if isOpenAIImageModel(options.Model) {
+		return d.openAIImageStream(ctx, prompt, options)
 	}
 	input := openAIResponsesInput(options.Conversation, rp.Items, openAIUseTools(options))
 	if options.CompactConversation != nil {
@@ -289,7 +296,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 			resp.Conversation = completion.Conversation
 		}), nil
 	}
-	payload, err := d.responsePayload(input, options, true)
+	payload, err := d.responsePayload(ctx, input, rp.Masks, options, true)
 	if err != nil {
 		return nil, err
 	}
@@ -300,6 +307,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: prompt}
 	state := newOpenAIResponsesStreamState(openAIIncludeThoughts(options), LlumiverseErrorContext{Provider: d.Provider(), Model: options.Model, Operation: "stream"})
+	state.requestedImageFormat = openAIRequestedImageFormat(options.ModelOptions)
 	go func() {
 		defer close(ch)
 		err := core.ScanSSE(res.Body, func(event core.SSEEvent) error {
@@ -341,7 +349,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 // only sent for non-reasoning models; reasoning effort is mapped per-model;
 // tools are omitted for likely non-tool models; and a ResultSchema becomes a
 // json_schema text format (strict when convertible), skipped for realtime models.
-func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options ExecutionOptions, stream bool) (map[string]any, error) {
+func (d *OpenAICompatibleDriver) responsePayload(ctx context.Context, input []responseItem, masks []DataSource, options ExecutionOptions, stream bool) (map[string]any, error) {
 	payload := map[string]any{
 		"model": options.Model,
 		"input": input,
@@ -400,6 +408,17 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 		}
 		if v := optionBoolPtr(mo, "parallel_tool_calls"); v != nil {
 			payload["parallel_tool_calls"] = *v
+		}
+	}
+	imageTool, forceImage, err := openAIImageGenerationTool(ctx, mo, masks)
+	if err != nil {
+		return nil, err
+	}
+	if imageTool != nil {
+		tools, _ := payload["tools"].([]map[string]any)
+		payload["tools"] = append(tools, imageTool)
+		if forceImage {
+			payload["tool_choice"] = map[string]any{"type": "image_generation"}
 		}
 	}
 	if text := d.openAIResponseTextConfig(options); text != nil {
@@ -617,11 +636,11 @@ func openAIToolUsage(usage *responsesToolUsage) *wire.ToolUsage {
 
 // extractOpenAIResponseCompletion maps a Responses output into a Completion,
 // collecting text/image results, tool uses, usage, and a normalized finish reason.
-func extractOpenAIResponseCompletion(response *responsesResponse, includeThoughts bool) *Completion {
+func extractOpenAIResponseCompletion(response *responsesResponse, includeThoughts bool, requestedImageFormat string) *Completion {
 	if response == nil {
 		return &Completion{Result: []CompletionResult{newTextResult("")}}
 	}
-	result := openAIResponseResults(response.Output, includeThoughts)
+	result := openAIResponseResults(response.Output, includeThoughts, requestedImageFormat)
 	output := response.Output
 	// An incomplete response may have stopped inside its last function call.
 	// That call is left out when its arguments are not complete JSON, rather
@@ -681,7 +700,7 @@ func openAIResponseFailure(response *responsesResponse, errContext LlumiverseErr
 // openAIResponseResults extracts reasoning summaries (as thoughts), text and
 // generated-image results from Responses output items, in order, wrapping bare
 // base64 image data in a PNG data URL.
-func openAIResponseResults(output []responsesOutputItem, includeThoughts bool) []CompletionResult {
+func openAIResponseResults(output []responsesOutputItem, includeThoughts bool, requestedImageFormat string) []CompletionResult {
 	results := []CompletionResult{}
 	for _, item := range output {
 		switch item.Type {
@@ -702,11 +721,7 @@ func openAIResponseResults(output []responsesOutputItem, includeThoughts bool) [
 			}
 		case "image_generation_call":
 			if item.Result != "" {
-				value := item.Result
-				if !strings.HasPrefix(value, "data:") {
-					value = "data:image/png;base64," + value
-				}
-				results = append(results, newImageResult(value))
+				results = append(results, newImageResult(openAIImageOutputDataURL(item.Result, item.OutputFormat, requestedImageFormat)))
 			}
 		}
 	}
@@ -832,6 +847,8 @@ type openAIResponsesStreamState struct {
 	hasTextDeltas   bool
 	refusal         string
 	includeThoughts bool
+	// requestedImageFormat is the output format asked of the image tool.
+	requestedImageFormat string
 	// final is the terminal response, whose output items become the conversation.
 	final *responsesResponse
 }
@@ -1007,7 +1024,7 @@ func (s *openAIResponsesStreamState) newImages(items []responsesOutputItem) []Co
 		if item.Type != "image_generation_call" || s.emittedImages[item.ID] {
 			continue
 		}
-		if images := openAIResponseResults([]responsesOutputItem{item}, false); len(images) > 0 {
+		if images := openAIResponseResults([]responsesOutputItem{item}, false, s.requestedImageFormat); len(images) > 0 {
 			s.emittedImages[item.ID] = true
 			results = append(results, images...)
 		}

@@ -366,14 +366,14 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 	}`), &response); err != nil {
 		t.Fatal(err)
 	}
-	completion := extractOpenAIResponseCompletion(&response, true)
+	completion := extractOpenAIResponseCompletion(&response, true, "")
 	if len(completion.Result) != 2 || completion.Result[1].Type() != ResultTypeImage || completion.Result[1].String() != "data:image/png;base64,aW1n" {
 		t.Fatalf("completion result = %#v", completion)
 	}
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ID != "call_1" {
 		t.Fatalf("tool use = %#v", completion.ToolUse)
 	}
-	if empty := extractOpenAIResponseCompletion(&responsesResponse{Status: "completed"}, true); len(empty.Result) != 0 || empty.FinishReason != "stop" {
+	if empty := extractOpenAIResponseCompletion(&responsesResponse{Status: "completed"}, true, ""); len(empty.Result) != 0 || empty.FinishReason != "stop" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 	responseTools := openAIResponseTools([]ToolDefinition{{Name: "lookup", Description: ptr("Lookup"), InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}})

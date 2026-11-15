@@ -351,7 +351,7 @@ func TestOpenAIImageGeneration(t *testing.T) {
 	if got["background"] != "transparent" || got["output_format"] != "webp" || got["output_compression"] != float64(80) || got["moderation"] != "low" {
 		t.Fatalf("image options = %#v", got)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeImage || resp.Result[0].String() != "data:image/png;base64,aW1hZ2U=" {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeImage || resp.Result[0].String() != "data:image/webp;base64,aW1hZ2U=" {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 }
