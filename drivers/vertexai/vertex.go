@@ -140,6 +140,10 @@ func (d *VertexAIDriver) CreatePrompt(ctx context.Context, segments []PromptSegm
 	if isClaudeModel(options.Model) {
 		return internalclaude.FormatPrompt(ctx, segments, options)
 	}
+	// Open MaaS models use the OpenAI Chat Completions endpoint (maas.go).
+	if route, ok := vertexMaaSRoute(options.Model); ok {
+		return d.createMaaSPrompt(ctx, route, segments, options)
+	}
 	return d.formatGeminiPrompt(ctx, segments, options)
 }
 
@@ -377,6 +381,10 @@ func (d *VertexAIDriver) requestTextCompletion(ctx context.Context, prompt any, 
 	if isClaudeModel(options.Model) {
 		return d.requestVertexClaude(ctx, prompt.(internalclaude.Prompt), options)
 	}
+	// Open MaaS models use the OpenAI Chat Completions endpoint (maas.go).
+	if route, ok := vertexMaaSRoute(options.Model); ok {
+		return d.requestMaaS(ctx, route, prompt, options)
+	}
 	return d.requestGemini(ctx, prompt.(geminiPrompt), options)
 }
 
@@ -389,6 +397,10 @@ func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt
 	}
 	if isClaudeModel(options.Model) {
 		return d.requestVertexClaudeStream(ctx, prompt.(internalclaude.Prompt), options)
+	}
+	// Open MaaS models use the OpenAI Chat Completions endpoint (maas.go).
+	if route, ok := vertexMaaSRoute(options.Model); ok {
+		return d.requestMaaSStream(ctx, route, prompt, options)
 	}
 	endpoint, err := d.vertexEndpoint(options.Model, "streamGenerateContent")
 	if err != nil {
