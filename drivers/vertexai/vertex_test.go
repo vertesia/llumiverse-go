@@ -1058,7 +1058,7 @@ func TestVertexImagenPromptAndParametersHelpers(t *testing.T) {
 		{Role: PromptRoleSafety, Content: "safe"},
 		{Role: PromptRoleNegative, Content: "blur"},
 		{Role: PromptRoleMask, Files: []DataSource{BytesDataSource{FileName: "mask.png", MIME: "image/png", Data: []byte("mask")}}},
-	}, ExecutionOptions{ModelOptions: map[string]any{"mask_mode": "MASK_MODE_USER_PROVIDED", "mask_dilation": 0.2}})
+	}, ExecutionOptions{ModelOptions: map[string]any{"edit_mode": "EDIT_MODE_INPAINT_INSERTION", "mask_mode": "MASK_MODE_USER_PROVIDED", "mask_dilation": 0.2}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1068,11 +1068,14 @@ func TestVertexImagenPromptAndParametersHelpers(t *testing.T) {
 	if len(prompt.ReferenceImages) != 2 || prompt.ReferenceImages[1]["referenceType"] != "REFERENCE_TYPE_MASK" {
 		t.Fatalf("reference images = %#v", prompt.ReferenceImages)
 	}
-	params := vertexImagenParameters(prompt, ExecutionOptions{ModelOptions: map[string]any{
+	params, err := vertexImagenParameters(prompt, ExecutionOptions{ModelOptions: map[string]any{
 		"edit_mode":    "EDIT_MODE_INPAINT_INSERTION",
 		"edit_steps":   12,
 		"aspect_ratio": "ignored-for-edit",
 	}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if params["editMode"] != "EDIT_MODE_INPAINT_INSERTION" || params["editConfig"].(map[string]any)["baseSteps"] != 12 {
 		t.Fatalf("edit params = %#v", params)
 	}
