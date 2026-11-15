@@ -34,6 +34,7 @@ type EmbeddingOutputModality = common.EmbeddingOutputModality
 type EmbeddingsTokenUsage = common.EmbeddingsTokenUsage
 type AIModel = common.AIModel
 type ModelSearchPayload = common.ModelSearchPayload
+type LlumiverseError = common.LlumiverseError
 type LlumiverseErrorContext = common.LlumiverseErrorContext
 type streamItem = core.StreamItem
 type sseEvent = core.SSEEvent

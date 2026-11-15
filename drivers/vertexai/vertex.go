@@ -401,7 +401,7 @@ func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt
 	}
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, options.Model, "stream")
 	}
 	delete(payload, "model")
 	body, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
@@ -445,7 +445,7 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 	}
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, options.Model, "execute")
 	}
 	var response geminiResponse
 	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, d.geminiPayload(prompt, options), &response); err != nil {
@@ -466,7 +466,7 @@ func (d *VertexAIDriver) requestVertexImagen(ctx context.Context, prompt vertexI
 	}
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, options.Model, "execute")
 	}
 	parameters := vertexImagenParameters(prompt, options)
 	payload := map[string]any{
@@ -1086,7 +1086,7 @@ func (d *VertexAIDriver) generateVertexTextPredictEmbeddings(ctx context.Context
 	}
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, model, "embeddings")
 	}
 	endpoint, err := d.vertexEndpoint(model, "predict")
 	if err != nil {
@@ -1185,7 +1185,7 @@ func (d *VertexAIDriver) generateVertexEmbedContentEmbeddings(ctx context.Contex
 	// config or prefix; media uses inlineData or fileData.
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, model, "embeddings")
 	}
 	endpoint, err := d.vertexEndpointForRegion(model, "embedContent", vertexEmbeddingRegion(model))
 	if err != nil {
@@ -1400,7 +1400,7 @@ func (d *VertexAIDriver) generateVertexLegacyMultimodalEmbeddings(ctx context.Co
 	// multiple segment embeddings inside that prediction.
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
-		return nil, err
+		return nil, d.formatError(err, model, "embeddings")
 	}
 	endpoint, err := d.vertexEndpoint(model, "predict")
 	if err != nil {
@@ -1684,16 +1684,22 @@ func (d *VertexAIDriver) tokenSource(ctx context.Context) (oauth2.TokenSource, e
 	return creds.TokenSource, nil
 }
 
-// formatError wraps an HTTP status error in a provider-tagged LlumiverseError
-// (with retryability derived from the status), passing other errors through.
+// formatError wraps a provider error in a LlumiverseError. Gemini, Imagen and
+// embedding models use the Gemini classification (formatGeminiError), as the TS
+// driver routes every non-Claude model to the Gemini error handler. Claude partner
+// models keep the status-based classification, passing errors without an HTTP
+// status through. Either way a 403 naming Cloud Storage gets the bucket hint.
 func (d *VertexAIDriver) formatError(err error, model string, operation string) error {
+	if !isClaudeModel(model) {
+		return formatGeminiError(err, model, operation)
+	}
 	code, _ := errorStatusAndName(err)
 	if code != 0 {
-		return newLlumiverseError(err.Error(), retryableFromStatusAndMessage(code, err.Error()), LlumiverseErrorContext{
+		return withVertexStorageHint(newLlumiverseError(err.Error(), retryableFromStatusAndMessage(code, err.Error()), LlumiverseErrorContext{
 			Provider:  ProviderVertexAI,
 			Model:     model,
 			Operation: operation,
-		}, err, code, "GeminiEnterpriseAgentPlatformError")
+		}, err, code, vertexErrorName))
 	}
 	return err
 }

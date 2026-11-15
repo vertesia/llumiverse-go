@@ -1216,8 +1216,11 @@ func TestVertexErrorFormattingFromHTTPStatus(t *testing.T) {
 	if !errors.As(err, &llumiErr) || llumiErr.Name != "GeminiEnterpriseAgentPlatformError" || llumiErr.Code != http.StatusServiceUnavailable || llumiErr.Context.Provider != ProviderVertexAI {
 		t.Fatalf("error = %#v", err)
 	}
-	if err := driver.formatError(errors.New("plain"), "gemini-test", "execute"); err.Error() != "plain" {
-		t.Fatalf("plain error = %v", err)
+	if err := driver.formatError(errors.New("plain"), "claude-test", "execute"); err.Error() != "plain" {
+		t.Fatalf("plain Claude error = %v", err)
+	}
+	if err := driver.formatError(errors.New("plain"), "gemini-test", "execute"); !errors.As(err, &llumiErr) || llumiErr.Retryable != nil {
+		t.Fatalf("plain Gemini error = %#v", err)
 	}
 }
 
