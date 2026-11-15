@@ -75,9 +75,25 @@ func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segm
 			others = append(others, responseMessage("user", parts))
 		}
 	}
+	if options.ResultSchema != nil && !d.supportsSchema(options.Model) {
+		// Without native structured output, the schema goes into the instructions.
+		system = append(system, responseMessage(systemRole, []responseItem{{"type": "input_text", "text": openAISchemaInstruction(options.ResultSchema)}}))
+	}
 	prompt.Items = append(prompt.Items, system...)
 	prompt.Items = append(prompt.Items, others...)
 	return prompt, nil
+}
+
+// supportsSchema reports whether the model takes native structured output:
+// realtime models and models without tool support do not.
+func (d *OpenAICompatibleDriver) supportsSchema(model string) bool {
+	return !strings.Contains(strings.ToLower(model), "realtime") && !isLikelyNonToolOpenAIModel(model)
+}
+
+// openAISchemaInstruction is the prompt instruction that carries a result schema.
+func openAISchemaInstruction(schema map[string]any) string {
+	data, _ := json.Marshal(schema)
+	return fmt.Sprintf(chatCompletionsSchemaInstruction, data)
 }
 
 // responseMessage builds an input message item from content parts.
@@ -206,6 +222,14 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 		"model": options.Model,
 		"input": input,
 	}
+	if key := openAIPromptCacheKey(options); key != "" {
+		payload["prompt_cache_key"] = key
+		marked, cacheOptions := configureOpenAIPromptCaching(input, options.Model, key)
+		payload["input"] = marked
+		if cacheOptions != nil {
+			payload["prompt_cache_options"] = cacheOptions
+		}
+	}
 	if v := optionInt(options.ModelOptions, "max_tokens"); v != nil {
 		payload["max_output_tokens"] = *v
 	}
@@ -226,7 +250,7 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 	if len(options.Tools) > 0 && !isLikelyNonToolOpenAIModel(options.Model) {
 		payload["tools"] = openAIResponseTools(options.Tools)
 	}
-	if options.ResultSchema != nil && !strings.Contains(strings.ToLower(options.Model), "realtime") {
+	if options.ResultSchema != nil && d.supportsSchema(options.Model) {
 		schema, strict := openAISchemaForResponses(options.ResultSchema)
 		payload["text"] = map[string]any{"format": map[string]any{
 			"type":   "json_schema",
@@ -327,11 +351,13 @@ type responsesUsage struct {
 	InputTokensDetails  *responsesInputTokenInfo `json:"input_tokens_details"`
 	PromptTokensDetails *responsesInputTokenInfo `json:"prompt_tokens_details"`
 	CachedTokens        *int64                   `json:"cached_tokens"`
+	CacheWriteTokens    *int64                   `json:"cache_write_tokens"`
 }
 
 // responsesInputTokenInfo details the input tokens of a response.
 type responsesInputTokenInfo struct {
-	CachedTokens *int64 `json:"cached_tokens"`
+	CachedTokens     *int64 `json:"cached_tokens"`
+	CacheWriteTokens *int64 `json:"cache_write_tokens"`
 }
 
 // extractOpenAIResponseCompletion maps a Responses output into a Completion,
@@ -399,21 +425,29 @@ func openAIResponseToolUses(output []responsesOutputItem) []ToolUse {
 	return tools
 }
 
-// openAIResponseUsage normalizes Responses token usage, returning nil when empty.
+// openAIResponseUsage normalizes Responses token usage, returning nil when
+// empty. Cache reads and writes are read from input_tokens_details, then from
+// the prompt_tokens_details or top-level fields some compatible endpoints use.
 func openAIResponseUsage(usage *responsesUsage) *ExecutionTokenUsage {
 	if usage == nil || (usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens == 0) {
 		return nil
 	}
-	var cached int64
-	switch {
-	case usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens != nil:
-		cached = *usage.InputTokensDetails.CachedTokens
-	case usage.PromptTokensDetails != nil && usage.PromptTokensDetails.CachedTokens != nil:
-		cached = *usage.PromptTokensDetails.CachedTokens
-	case usage.CachedTokens != nil:
-		cached = *usage.CachedTokens
+	pick := func(get func(*responsesInputTokenInfo) *int64, top *int64) *int64 {
+		for _, details := range []*responsesInputTokenInfo{usage.InputTokensDetails, usage.PromptTokensDetails} {
+			if details != nil {
+				if v := get(details); v != nil {
+					return v
+				}
+			}
+		}
+		return top
 	}
-	return openAIUsage(usage.InputTokens, usage.OutputTokens, usage.TotalTokens, cached)
+	cached := pick(func(d *responsesInputTokenInfo) *int64 { return d.CachedTokens }, usage.CachedTokens)
+	cacheWrite := pick(func(d *responsesInputTokenInfo) *int64 { return d.CacheWriteTokens }, usage.CacheWriteTokens)
+	out := openAIPromptUsage(usage.InputTokens, cached, cacheWrite)
+	out.Result = tokens(int(usage.OutputTokens))
+	out.Total = tokens(int(usage.TotalTokens))
+	return out
 }
 
 // openAIResponseFinishReason maps the Responses status into a canonical finish
