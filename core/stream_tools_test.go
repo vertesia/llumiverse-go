@@ -76,6 +76,15 @@ func TestFinalizeStreamingToolUse(t *testing.T) {
 		}
 	})
 
+	t.Run("drops empty arguments on a length stop", func(t *testing.T) {
+		tools, err := FinalizeStreamingToolUse([]ToolUseChunk{
+			{ID: "write", ToolName: "write_artifact", ToolInput: ""},
+		}, "length", streamToolTestContext)
+		if err != nil || tools != nil {
+			t.Fatalf("tools = %#v, err = %v", tools, err)
+		}
+	})
+
 	t.Run("drops malformed arguments on a length stop", func(t *testing.T) {
 		tools, err := FinalizeStreamingToolUse([]ToolUseChunk{
 			{ID: "write", ToolName: "write_artifact", ToolInput: `{"name":`},

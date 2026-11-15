@@ -103,7 +103,15 @@ func finalizeStreamingToolUse(tools []ToolUseChunk, finishReason string, errCont
 		if text, ok := input.(string); ok {
 			var parsed any
 			if strings.TrimSpace(text) == "" {
-				// Claude streams a call without arguments as one empty partial_json.
+				// Claude streams a call without arguments as one empty partial_json:
+				// a complete call, unless a length stop cut it off before its first
+				// argument fragment arrived.
+				if finishReason == "length" {
+					if malformed == nil {
+						malformed = &tools[i]
+					}
+					continue
+				}
 				parsed = map[string]any{}
 			} else if err := json.Unmarshal([]byte(text), &parsed); err != nil {
 				if malformed == nil {
