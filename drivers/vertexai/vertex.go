@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -110,16 +109,29 @@ type geminiFileData struct {
 	FileURI  string `json:"fileUri"`
 }
 
-// geminiFunctionCall is a tool invocation emitted by the model.
+// geminiFunctionCall is a tool invocation emitted by the model. ID is unique within
+// the conversation (see assignGeminiFunctionCallIDs).
 type geminiFunctionCall struct {
+	ID   string `json:"id,omitempty"`
 	Name string `json:"name"`
 	Args any    `json:"args,omitempty"`
 }
 
-// geminiFunctionResult is the caller-supplied result for a prior function call.
+// geminiFunctionResult is the caller-supplied result for a prior function call. ID
+// echoes the call id when the call has one; Parts carries media attached to the
+// tool result.
 type geminiFunctionResult struct {
-	Name     string         `json:"name"`
-	Response map[string]any `json:"response"`
+	ID       string                    `json:"id,omitempty"`
+	Name     string                    `json:"name"`
+	Response map[string]any            `json:"response"`
+	Parts    []geminiFunctionMediaPart `json:"parts,omitempty"`
+}
+
+// geminiFunctionMediaPart is a media attachment of a function response, passed by
+// URI for Cloud Storage objects and inlined otherwise.
+type geminiFunctionMediaPart struct {
+	InlineData *geminiInlineData `json:"inlineData,omitempty"`
+	FileData   *geminiFileData   `json:"fileData,omitempty"`
 }
 
 // vertexImagenPrompt is the Imagen predict instance: a text prompt plus optional
@@ -152,6 +164,7 @@ func (d *VertexAIDriver) CreatePrompt(ctx context.Context, segments []PromptSegm
 func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (geminiPrompt, error) {
 	prompt := geminiPrompt{System: &geminiContent{Role: "user"}}
 	var safety []geminiContent
+	callNamesByID := geminiFunctionCallNamesByID(geminiStoredContents(options.Conversation))
 	for _, segment := range segments {
 		switch segment.Role {
 		case PromptRoleNegative, PromptRoleMask:
@@ -169,11 +182,13 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 			}
 			// Gemini thinking models require the thoughtSignature that arrived
 			// with the tool call to be echoed on the matching functionResponse.
+			id, name := resolveGeminiFunctionResponseTarget(segment.ToolUseID, callNamesByID)
 			prompt.Contents = append(prompt.Contents, geminiContent{
 				Role: "user",
 				Parts: []geminiPart{{
 					FunctionResponse: &geminiFunctionResult{
-						Name:     segment.ToolUseID,
+						ID:       id,
+						Name:     name,
 						Response: formatGeminiFunctionResponse(segment.Content),
 					},
 					ThoughtSignature: segment.ThoughtSignature,
@@ -218,9 +233,10 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 	if len(prompt.System.Parts) == 0 {
 		prompt.System = nil
 	}
-	// Safety messages are appended at the end, then adjacent roles are merged to
-	// keep the same conversation shape as the TS driver.
-	prompt.Contents = mergeGeminiRoles(append(prompt.Contents, safety...))
+	// Safety messages are appended at the end. Segment boundaries are kept, as in the
+	// TS driver: they are explicit-cache breakpoints and the caller's turn shape.
+	// Split tool results are recombined when the request is built.
+	prompt.Contents = append(prompt.Contents, safety...)
 	return prompt, nil
 }
 
@@ -245,24 +261,6 @@ func isVertexGCSURL(uri string) bool {
 	return strings.HasPrefix(uri, "gs://") ||
 		strings.HasPrefix(uri, "https://storage.googleapis.com/") ||
 		strings.HasPrefix(uri, "https://storage.cloud.google.com/")
-}
-
-// mergeGeminiRoles collapses consecutive turns that share a role into one turn,
-// concatenating their parts, matching the conversation shape the TS driver produces.
-func mergeGeminiRoles(contents []geminiContent) []geminiContent {
-	if len(contents) < 2 {
-		return contents
-	}
-	out := []geminiContent{contents[0]}
-	for _, content := range contents[1:] {
-		last := &out[len(out)-1]
-		if last.Role == content.Role {
-			last.Parts = append(last.Parts, content.Parts...)
-		} else {
-			out = append(out, content)
-		}
-	}
-	return out
 }
 
 // formatGeminiFunctionResponse normalizes a tool result string into the object
@@ -390,70 +388,7 @@ func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt
 	if isClaudeModel(options.Model) {
 		return d.requestVertexClaudeStream(ctx, prompt.(internalclaude.Prompt), options)
 	}
-	endpoint, err := d.vertexEndpoint(options.Model, "streamGenerateContent")
-	if err != nil {
-		return nil, err
-	}
-	geminiInput := geminiConversationInput(options.Conversation, prompt.(geminiPrompt))
-	payload := d.geminiPayload(geminiInput, options)
-	if !strings.Contains(endpoint, "?") {
-		endpoint += "?alt=sse"
-	}
-	headers, err := d.authHeaders(ctx)
-	if err != nil {
-		return nil, d.formatError(err, options.Model, "stream")
-	}
-	delete(payload, "model")
-	body, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
-	if err != nil {
-		return nil, d.formatError(err, options.Model, "stream")
-	}
-	ch := make(chan streamItem)
-	completion := &ExecutionResponse{Prompt: geminiInput}
-	go func() {
-		defer close(ch)
-		err := scanSSE(body, func(event sseEvent) error {
-			if event.Data == "" {
-				return nil
-			}
-			var response geminiResponse
-			if err := json.Unmarshal([]byte(event.Data), &response); err != nil {
-				return err
-			}
-			chunk := geminiResponseToChunk(response)
-			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
-				ch <- streamItem{Chunk: chunk}
-			}
-			return nil
-		})
-		if err != nil && !errors.Is(err, io.EOF) {
-			ch <- streamItem{Err: d.formatError(err, options.Model, "stream")}
-		}
-	}()
-	return newChannelStreamWithFinalizer(ch, completion, body.Close, func(resp *ExecutionResponse) {
-		resp.Conversation = finalizeGeminiConversation(buildGeminiStreamingConversation(geminiInput, &resp.Completion), options)
-	}), nil
-}
-
-// requestGemini POSTs a generateContent request and converts the response into a
-// Completion plus the updated conversation.
-func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt, options ExecutionOptions) (*Completion, error) {
-	prompt = geminiConversationInput(options.Conversation, prompt)
-	endpoint, err := d.vertexEndpoint(options.Model, "generateContent")
-	if err != nil {
-		return nil, err
-	}
-	headers, err := d.authHeaders(ctx)
-	if err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	var response geminiResponse
-	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, d.geminiPayload(prompt, options), &response); err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	completion := geminiResponseToCompletion(response, options.IncludeOriginalResponse)
-	completion.Conversation = finalizeGeminiConversation(appendGeminiResponseToConversation(prompt, response), options)
-	return completion, nil
+	return d.requestGeminiStream(ctx, prompt.(geminiPrompt), options)
 }
 
 // requestVertexImagen POSTs an Imagen predict request and returns each generated
@@ -591,13 +526,7 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 			config["imageConfig"] = imageConfig
 		}
 	}
-	contents := prompt.Contents
-	if len(options.Tools) == 0 && geminiContentsContainToolParts(contents) {
-		// Checkpoint summaries may replay conversations with prior functionCall or
-		// functionResponse parts after tools have been disabled. Convert them to
-		// text so the request remains valid without toolConfig.
-		contents = convertGeminiFunctionPartsToText(contents)
-	}
+	contents := geminiRequestContents(prompt.Contents, len(options.Tools) > 0)
 	payload := map[string]any{
 		"contents":         contents,
 		"generationConfig": config,
@@ -635,34 +564,63 @@ func geminiTools(tools []ToolDefinition) []map[string]any {
 	return out
 }
 
-// geminiConversationInput merges a prior conversation (in any of its stored forms)
-// with the new prompt, carrying over the system instruction and merging roles.
-func geminiConversationInput(conversation any, prompt geminiPrompt) geminiPrompt {
-	out := geminiPrompt{}
+// geminiStoredConversation decodes a prior conversation in any of its stored
+// forms: the geminiPrompt the driver returns (or its JSON object), a bare content
+// array, or the TS client's wrapper ({"_arrayConversation": [...],
+// "_llumiverse_system": {...}}). ok is false for a value that is none of these.
+func geminiStoredConversation(conversation any) (out geminiPrompt, ok bool) {
 	switch value := conversation.(type) {
+	case nil:
+		return out, true
 	case geminiPrompt:
-		out = value
+		return value, true
 	case *geminiPrompt:
 		if value != nil {
 			out = *value
 		}
+		return out, true
 	case []geminiContent:
-		out.Contents = append(out.Contents, value...)
+		out.Contents = value
+		return out, true
 	case map[string]any:
-		var decoded geminiPrompt
-		if decodeStoredConversation(value, &decoded) {
-			out = decoded
+		if wrapped, isWrapped := value["_arrayConversation"].([]any); isWrapped {
+			if !decodeStoredConversation(wrapped, &out.Contents) {
+				return out, false
+			}
+			if system, hasSystem := value["_llumiverse_system"].(map[string]any); hasSystem {
+				var decoded geminiContent
+				if decodeStoredConversation(system, &decoded) {
+					out.System = &decoded
+				}
+			}
+			return out, true
 		}
+		if _, hasContents := value["contents"]; !hasContents {
+			return out, false
+		}
+		return out, decodeStoredConversation(value, &out)
 	case []any:
-		var decoded []geminiContent
-		if decodeStoredConversation(value, &decoded) {
-			out.Contents = append(out.Contents, decoded...)
-		}
+		return out, decodeStoredConversation(value, &out.Contents)
+	default:
+		return out, false
 	}
+}
+
+// geminiStoredContents returns the contents of a prior conversation, or nil when
+// it has none or is not a Gemini conversation.
+func geminiStoredContents(conversation any) []geminiContent {
+	stored, _ := geminiStoredConversation(conversation)
+	return stored.Contents
+}
+
+// geminiConversationInput appends the new prompt to a prior conversation, carrying
+// over the system instruction. The stored conversation is copied, never modified.
+func geminiConversationInput(conversation any, prompt geminiPrompt) geminiPrompt {
+	out, _ := geminiStoredConversation(conversation)
 	if prompt.System != nil {
 		out.System = prompt.System
 	}
-	out.Contents = mergeGeminiRoles(append(out.Contents, prompt.Contents...))
+	out.Contents = append(append(make([]geminiContent, 0, len(out.Contents)+len(prompt.Contents)), out.Contents...), prompt.Contents...)
 	return out
 }
 
@@ -682,7 +640,10 @@ func appendGeminiResponseToConversation(prompt geminiPrompt, response geminiResp
 	}
 	content := response.Candidates[0].Content
 	if len(content.Parts) > 0 {
-		prompt.Contents = mergeGeminiRoles(append(prompt.Contents, content))
+		if content.Role == "" {
+			content.Role = "model"
+		}
+		prompt.Contents = append(prompt.Contents, content)
 	}
 	return prompt
 }
@@ -702,12 +663,13 @@ func buildGeminiStreamingConversation(prompt geminiPrompt, completion *Completio
 			args = map[string]any(*tool.ToolInput)
 		}
 		parts = append(parts, geminiPart{
-			FunctionCall:     &geminiFunctionCall{Name: tool.ToolName, Args: args},
+			// The tool-use id is the call id, so a later tool result can find this call.
+			FunctionCall:     &geminiFunctionCall{ID: tool.ID, Name: tool.ToolName, Args: args},
 			ThoughtSignature: stringValue(tool.ThoughtSignature),
 		})
 	}
 	if len(parts) > 0 {
-		prompt.Contents = mergeGeminiRoles(append(prompt.Contents, geminiContent{Role: "model", Parts: parts}))
+		prompt.Contents = append(prompt.Contents, geminiContent{Role: "model", Parts: parts})
 	}
 	return prompt
 }
@@ -941,7 +903,7 @@ func geminiResponseToChunk(response geminiResponse) CompletionChunk {
 			// caller can execute the tool or report a toolError, rather than
 			// treating the model response as a provider failure.
 			chunk.ToolUse = append(chunk.ToolUse, ToolUseChunk{
-				ID:               part.FunctionCall.Name,
+				ID:               geminiToolUseID(part.FunctionCall),
 				ToolName:         part.FunctionCall.Name,
 				ToolInput:        part.FunctionCall.Args,
 				ThoughtSignature: part.ThoughtSignature,

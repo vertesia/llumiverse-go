@@ -343,15 +343,16 @@ func TestVertexGeminiPromptFormattingAndHelperBranches(t *testing.T) {
 	if prompt.System == nil || len(prompt.System.Parts) != 2 || !strings.Contains(prompt.System.Parts[1].Text, "When not calling tools") {
 		t.Fatalf("system = %#v", prompt.System)
 	}
-	if len(prompt.Contents) != 2 || prompt.Contents[0].Role != "model" || prompt.Contents[1].Role != "user" {
+	// Segment boundaries are kept, as in the TS driver: one content per segment.
+	if len(prompt.Contents) != 4 || prompt.Contents[0].Role != "model" || prompt.Contents[1].Role != "user" {
 		t.Fatalf("contents = %#v", prompt.Contents)
 	}
-	toolPart := prompt.Contents[1].Parts[1]
+	toolPart := prompt.Contents[2].Parts[0]
 	if toolPart.FunctionResponse == nil || toolPart.FunctionResponse.Name != "lookup" || toolPart.ThoughtSignature != "sig" {
 		t.Fatalf("tool part = %#v", toolPart)
 	}
-	if prompt.Contents[1].Parts[2].Text != "Safety" {
-		t.Fatalf("safety part = %#v", prompt.Contents[1].Parts)
+	if prompt.Contents[3].Parts[0].Text != "Safety" {
+		t.Fatalf("safety part = %#v", prompt.Contents[3].Parts)
 	}
 	sparse, err := driver.formatGeminiPrompt(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "Question"}}, ExecutionOptions{
 		ResultSchema: map[string]any{"type": "object"},
