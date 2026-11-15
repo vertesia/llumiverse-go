@@ -37,6 +37,10 @@ type (
 	EmbeddingsTokenUsage = wire.EmbeddingsTokenUsage
 	// JSONObject is a JSON object value.
 	JSONObject = wire.JSONObject
+	// PromptCacheDiagnostic is a safe diagnostic for one provider-side explicit prompt-cache attempt.
+	PromptCacheDiagnostic = wire.PromptCacheDiagnostic
+	// ToolUsage is usage billed apart from the main model: hosted tools and auxiliary models.
+	ToolUsage = wire.ToolUsage
 )
 
 // Result constructors, re-exported from package wire.

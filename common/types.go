@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/vertesia/llumiverse-go/wire"
 )
 
 // Provider identifies a model-hosting backend supported by the driver layer.
@@ -128,6 +130,9 @@ type HTTPTimeoutOptions struct {
 type DriverOptions struct {
 	// HTTPTimeout supplies constructor-level transport timeout defaults.
 	HTTPTimeout HTTPTimeoutOptions
+	// StreamStartTimeout bounds how long a stream may wait for its first chunk
+	// before it is cancelled. Zero leaves it to the transport timeouts.
+	StreamStartTimeout time.Duration
 }
 
 // ExecutionOptions contains per-request options common to completion drivers.
@@ -156,6 +161,53 @@ type ExecutionOptions struct {
 	StripTextMaxTokens int
 	// StripHeartbeatsAfterTurns controls removal of <heartbeat>...</heartbeat> blocks.
 	StripHeartbeatsAfterTurns *int
+	// PromptCacheKey is a stable identity for prompt caching. Providers with cache
+	// routing keys receive it directly; providers with cache breakpoints use its
+	// presence to cache the stable prefix before the final dynamic block.
+	PromptCacheKey string
+	// PromptCacheMode controls provider-side explicit caches (for example Vertex
+	// cachedContents): "auto" (default when empty), "off", or "required".
+	PromptCacheMode PromptCacheMode
+	// PromptCacheTTLSeconds is the lifetime of a provider-side cache resource
+	// created for this execution. Zero means the provider default (1800 seconds).
+	PromptCacheTTLSeconds int
+	// PromptCacheSchemaSuffix puts the result schema after the cached prompt prefix
+	// instead of in native structured-output configuration, where a driver supports it.
+	PromptCacheSchemaSuffix bool
+	// OutputStorageURI is the provider output prefix for generated media (for
+	// example a gs:// prefix for Vertex video generation).
+	OutputStorageURI string
+	// Compaction enables server-side compaction of a long conversation (Claude
+	// Messages API and OpenAI Responses API). Nil means no compaction.
+	Compaction *ConversationCompactionOptions
+	// CompactConversation compacts the conversation now instead of answering it.
+	// It takes precedence over Compaction.
+	CompactConversation *CompactConversationOptions
+}
+
+// PromptCacheMode is the type of ExecutionOptions.PromptCacheMode.
+type PromptCacheMode = wire.PromptCacheMode
+
+// PromptCacheMode values.
+const (
+	PromptCacheModeAuto     PromptCacheMode = "auto"
+	PromptCacheModeOff      PromptCacheMode = "off"
+	PromptCacheModeRequired PromptCacheMode = "required"
+)
+
+// ConversationCompactionOptions configures server-side conversation compaction.
+// Omitted fields leave the provider's defaults in place.
+type ConversationCompactionOptions struct {
+	// TriggerTokens is the input size at which the provider compacts (Claude's default is 150,000).
+	TriggerTokens int
+	// Instructions replaces the provider's summarization prompt (Claude only).
+	Instructions string
+}
+
+// CompactConversationOptions configures on-demand conversation compaction.
+type CompactConversationOptions struct {
+	// Instructions replaces the provider's summarization prompt (Claude only).
+	Instructions string
 }
 
 // ResultValidationError is set when JSON-schema result validation fails.
@@ -184,6 +236,10 @@ type Completion struct {
 	OriginalResponse any
 	// Conversation is provider-shaped state that can be passed to ExecutionOptions.
 	Conversation any
+	// ServiceTier is the service tier the provider reports it used, when it reports one.
+	ServiceTier string
+	// PromptCacheDiagnostic describes a provider-side explicit prompt-cache attempt.
+	PromptCacheDiagnostic *PromptCacheDiagnostic
 }
 
 // ExecutionResponse adds request metadata around a completed model call.
@@ -207,6 +263,8 @@ type CompletionChunk struct {
 	FinishReason string
 	// ToolUse contains incremental tool-call data.
 	ToolUse []ToolUseChunk
+	// ServiceTier is the service tier the provider reports, usually on a terminal chunk.
+	ServiceTier string
 }
 
 // ToolUseChunk is a tool-call fragment in a stream: the TypeScript client's ToolUse<unknown>.

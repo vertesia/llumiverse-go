@@ -27,6 +27,11 @@ type JSONObject = common.JSONObject
 type ModelType = common.ModelType
 type CompletionResult = common.CompletionResult
 type ExecutionTokenUsage = common.ExecutionTokenUsage
+type PromptCacheMode = common.PromptCacheMode
+type PromptCacheDiagnostic = common.PromptCacheDiagnostic
+type ToolUsage = common.ToolUsage
+type ConversationCompactionOptions = common.ConversationCompactionOptions
+type CompactConversationOptions = common.CompactConversationOptions
 type ResultValidationError = common.ResultValidationError
 type Completion = common.Completion
 type ExecutionResponse = common.ExecutionResponse
@@ -85,6 +90,10 @@ const (
 	EmbeddingInputImage = core.EmbeddingInputImage
 	EmbeddingInputVideo = core.EmbeddingInputVideo
 	EmbeddingInputAudio = core.EmbeddingInputAudio
+
+	PromptCacheModeAuto     = common.PromptCacheModeAuto
+	PromptCacheModeOff      = common.PromptCacheModeOff
+	PromptCacheModeRequired = common.PromptCacheModeRequired
 )
 
 // Result constructors, re-exported from package common.
