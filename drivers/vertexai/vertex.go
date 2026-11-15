@@ -17,7 +17,6 @@ import (
 )
 
 const vertexScopeCloudPlatform = "https://www.googleapis.com/auth/cloud-platform"
-const vertexAnthropicVersion = "vertex-2023-10-16"
 
 // Gemini Enterprise Agent Platform embeddings default to gemini-embedding-2 to match the TypeScript client.
 const defaultVertexEmbeddingModel = "gemini-embedding-2"
@@ -381,40 +380,22 @@ func (d *VertexAIDriver) requestTextCompletion(ctx context.Context, prompt any, 
 	return d.requestGemini(ctx, prompt.(geminiPrompt), options)
 }
 
-// requestTextCompletionStream opens an SSE stream. Claude models use the
-// rawPredict endpoint with the Claude payload (stamped with anthropic_version),
-// Gemini models use streamGenerateContent; the alt=sse query param is appended,
-// chunks are decoded per provider, and a finalizer rebuilds the conversation.
+// requestTextCompletionStream opens an SSE stream. Claude partner models are
+// handed to requestVertexClaudeStream; Gemini models use streamGenerateContent
+// with alt=sse, chunks are decoded, and a finalizer rebuilds the conversation.
 func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt any, options ExecutionOptions) (CompletionStream, error) {
 	if isVertexImagenModel(options.Model) {
 		return nil, errors.New("gemini enterprise agent platform imagen models do not support streaming")
 	}
-	var endpoint string
-	var payload map[string]any
-	payloadHeaders := map[string]string{}
-	var err error
 	if isClaudeModel(options.Model) {
-		claudeConversation := internalclaude.ConversationInput(options.Conversation, prompt.(internalclaude.Prompt))
-		endpoint, err = d.vertexEndpoint(options.Model, "rawPredict")
-		if err != nil {
-			return nil, err
-		}
-		payload, payloadHeaders, err = internalclaude.Payload(claudeConversation, withShortModel(options), true, map[string]string{})
-		if err != nil {
-			return nil, err
-		}
-		// Vertex selects the Claude model from the rawPredict resource path; the
-		// partner endpoint rejects the Anthropic-native model field.
-		delete(payload, "model")
-		payload["anthropic_version"] = vertexAnthropicVersion
-	} else {
-		endpoint, err = d.vertexEndpoint(options.Model, "streamGenerateContent")
-		prompt = geminiConversationInput(options.Conversation, prompt.(geminiPrompt))
-		payload = d.geminiPayload(prompt.(geminiPrompt), options)
+		return d.requestVertexClaudeStream(ctx, prompt.(internalclaude.Prompt), options)
 	}
+	endpoint, err := d.vertexEndpoint(options.Model, "streamGenerateContent")
 	if err != nil {
 		return nil, err
 	}
+	geminiInput := geminiConversationInput(options.Conversation, prompt.(geminiPrompt))
+	payload := d.geminiPayload(geminiInput, options)
 	if !strings.Contains(endpoint, "?") {
 		endpoint += "?alt=sse"
 	}
@@ -422,33 +403,17 @@ func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt
 	if err != nil {
 		return nil, err
 	}
-	// Vertex selects the Claude model from the rawPredict resource path; the
-	// partner endpoint rejects the Anthropic-native model field.
 	delete(payload, "model")
-	for key, value := range payloadHeaders {
-		headers[key] = value
-	}
 	body, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "stream")
 	}
 	ch := make(chan streamItem)
-	completion := &ExecutionResponse{Prompt: prompt}
+	completion := &ExecutionResponse{Prompt: geminiInput}
 	go func() {
 		defer close(ch)
 		err := scanSSE(body, func(event sseEvent) error {
 			if event.Data == "" {
-				return nil
-			}
-			if isClaudeModel(options.Model) {
-				var envelope map[string]json.RawMessage
-				if err := json.Unmarshal([]byte(event.Data), &envelope); err != nil {
-					return err
-				}
-				chunk := internalclaude.SSEToChunk(envelope, options)
-				if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
-					ch <- streamItem{Chunk: chunk}
-				}
 				return nil
 			}
 			var response geminiResponse
@@ -466,11 +431,7 @@ func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt
 		}
 	}()
 	return newChannelStreamWithFinalizer(ch, completion, body.Close, func(resp *ExecutionResponse) {
-		if isClaudeModel(options.Model) {
-			resp.Conversation = internalclaude.FinalizeConversation(internalclaude.BuildStreamingConversation(internalclaude.ConversationInput(options.Conversation, prompt.(internalclaude.Prompt)), &resp.Completion), options)
-			return
-		}
-		resp.Conversation = finalizeGeminiConversation(buildGeminiStreamingConversation(prompt.(geminiPrompt), &resp.Completion), options)
+		resp.Conversation = finalizeGeminiConversation(buildGeminiStreamingConversation(geminiInput, &resp.Completion), options)
 	}), nil
 }
 
@@ -893,37 +854,6 @@ func geminiBudgetForEffort(model string, effort string) int {
 	default:
 		return 0
 	}
-}
-
-// requestVertexClaude POSTs a Claude partner-model request via rawPredict, reusing
-// the shared Claude payload/response handling and stamping the anthropic_version.
-func (d *VertexAIDriver) requestVertexClaude(ctx context.Context, prompt internalclaude.Prompt, options ExecutionOptions) (*Completion, error) {
-	endpoint, err := d.vertexEndpoint(options.Model, "rawPredict")
-	if err != nil {
-		return nil, err
-	}
-	headers, err := d.authHeaders(ctx)
-	if err != nil {
-		return nil, err
-	}
-	payload, payloadHeaders, err := internalclaude.Payload(internalclaude.ConversationInput(options.Conversation, prompt), withShortModel(options), false, map[string]string{})
-	if err != nil {
-		return nil, err
-	}
-	// Vertex selects the Claude model from the rawPredict resource path; the
-	// partner endpoint rejects the Anthropic-native model field.
-	delete(payload, "model")
-	for key, value := range payloadHeaders {
-		headers[key] = value
-	}
-	payload["anthropic_version"] = vertexAnthropicVersion
-	var response internalclaude.Response
-	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, payload, &response); err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	completion := internalclaude.ExtractCompletion(response, options)
-	completion.Conversation = internalclaude.FinalizeConversation(internalclaude.AppendResponseToConversation(internalclaude.ConversationInput(options.Conversation, prompt), response), options)
-	return completion, nil
 }
 
 // geminiResponse is the generateContent / streamGenerateContent response: candidate
@@ -1766,11 +1696,6 @@ func (d *VertexAIDriver) formatError(err error, model string, operation string) 
 		}, err, code, "GeminiEnterpriseAgentPlatformError")
 	}
 	return err
-}
-
-// isClaudeModel reports whether a model ID refers to a Claude/Anthropic partner model.
-func isClaudeModel(model string) bool {
-	return strings.Contains(strings.ToLower(model), "claude") || strings.Contains(strings.ToLower(model), "anthropic")
 }
 
 // isVertexImagenModel reports whether a model ID refers to an Imagen image model.
