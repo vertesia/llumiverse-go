@@ -1,7 +1,11 @@
 package bedrock
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -162,4 +166,60 @@ func bedrockHasToolResult(content []brtypes.ContentBlock) bool {
 		}
 	}
 	return false
+}
+
+// bedrockMaxInlineAudioBytes bounds audio sent inline as Converse bytes.
+const bedrockMaxInlineAudioBytes = 25_000_000
+
+// bedrockAudioFormats maps audio MIME types to Converse audio formats; unknown
+// types fall back to mp3, as in the TS client.
+var bedrockAudioFormats = map[string]brtypes.AudioFormat{
+	"audio/aac":        brtypes.AudioFormatAac,
+	"audio/flac":       brtypes.AudioFormatFlac,
+	"audio/mp4":        brtypes.AudioFormatMp4,
+	"audio/mpeg":       brtypes.AudioFormatMp3,
+	"audio/ogg":        brtypes.AudioFormatOgg,
+	"audio/opus":       brtypes.AudioFormatOpus,
+	"audio/wav":        brtypes.AudioFormatWav,
+	"audio/webm":       brtypes.AudioFormatWebm,
+	"audio/x-aac":      brtypes.AudioFormatXAac,
+	"audio/x-m4a":      brtypes.AudioFormatM4a,
+	"audio/x-matroska": brtypes.AudioFormatMka,
+}
+
+// bedrockAudioFormat returns the Converse audio format for a MIME type.
+func bedrockAudioFormat(mimeType string) brtypes.AudioFormat {
+	if format, ok := bedrockAudioFormats[strings.ToLower(mimeType)]; ok {
+		return format
+	}
+	return brtypes.AudioFormatMp3
+}
+
+// bedrockAudioBlock maps an audio DataSource to a Converse audio block. An S3
+// location is passed by reference; anything else is read inline, bounded to
+// bedrockMaxInlineAudioBytes, and an empty file is rejected. Audio is binary,
+// so it is never read as text.
+func bedrockAudioBlock(ctx context.Context, file DataSource) (brtypes.AudioBlock, error) {
+	format := bedrockAudioFormat(file.MIMEType())
+	if uri, err := file.URL(ctx); err == nil {
+		if s3URI := bedrockS3URI(uri); s3URI != "" {
+			return brtypes.AudioBlock{Format: format, Source: &brtypes.AudioSourceMemberS3Location{Value: brtypes.S3Location{Uri: aws.String(s3URI)}}}, nil
+		}
+	}
+	rc, err := file.Open(ctx)
+	if err != nil {
+		return brtypes.AudioBlock{}, err
+	}
+	defer func() { _ = rc.Close() }()
+	data, err := io.ReadAll(io.LimitReader(rc, bedrockMaxInlineAudioBytes+1))
+	if err != nil {
+		return brtypes.AudioBlock{}, err
+	}
+	if len(data) > bedrockMaxInlineAudioBytes {
+		return brtypes.AudioBlock{}, fmt.Errorf("audio exceeds the %d byte limit", bedrockMaxInlineAudioBytes)
+	}
+	if len(data) == 0 {
+		return brtypes.AudioBlock{}, errors.New("audio file is empty")
+	}
+	return brtypes.AudioBlock{Format: format, Source: &brtypes.AudioSourceMemberBytes{Value: data}}, nil
 }

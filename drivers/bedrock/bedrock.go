@@ -355,6 +355,13 @@ func bedrockFileBlock(ctx context.Context, file DataSource) (brtypes.ContentBloc
 		}
 		return &brtypes.ContentBlockMemberVideo{Value: block}, nil
 	}
+	if strings.HasPrefix(mimeType, "audio/") {
+		block, err := bedrockAudioBlock(ctx, file)
+		if err != nil {
+			return nil, err
+		}
+		return &brtypes.ContentBlockMemberAudio{Value: block}, nil
+	}
 	if strings.HasPrefix(mimeType, "text/") {
 		text, err := readAllStringFromDataSource(ctx, file)
 		if err != nil {
@@ -415,6 +422,9 @@ func bedrockToolResultFileBlock(ctx context.Context, file DataSource) (brtypes.T
 			return nil, err
 		}
 		return &brtypes.ToolResultContentBlockMemberVideo{Value: block}, nil
+	}
+	if strings.HasPrefix(mimeType, "audio/") {
+		return nil, errors.New("bedrock Converse does not support audio blocks in tool results")
 	}
 	text, err := readAllStringFromDataSource(ctx, file)
 	if err != nil {
