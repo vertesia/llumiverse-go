@@ -1155,7 +1155,7 @@ func TestBedrockReasoningFinishAndRetryHelpers(t *testing.T) {
 	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberText{Value: "think"}); got != "think" {
 		t.Fatalf("reasoning delta text = %q", got)
 	}
-	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberRedactedContent{Value: []byte("secret")}); got != "[Redacted thinking: secret]" {
+	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberRedactedContent{Value: []byte("secret")}); got != "" {
 		t.Fatalf("reasoning delta redacted = %q", got)
 	}
 	if got := bedrockReasoningDeltaText(&brtypes.ReasoningContentBlockDeltaMemberSignature{Value: "sig"}); got != "\n\n" {
@@ -1167,7 +1167,7 @@ func TestBedrockReasoningFinishAndRetryHelpers(t *testing.T) {
 	if got := bedrockReasoningContentText(&brtypes.ReasoningContentBlockMemberReasoningText{Value: brtypes.ReasoningTextBlock{Text: aws.String("full"), Signature: aws.String("sig")}}); got != "full\n\n" {
 		t.Fatalf("reasoning signed content = %q", got)
 	}
-	if got := bedrockReasoningContentText(&brtypes.ReasoningContentBlockMemberRedactedContent{Value: []byte("sealed")}); got != "[Redacted thinking: sealed]" {
+	if got := bedrockReasoningContentText(&brtypes.ReasoningContentBlockMemberRedactedContent{Value: []byte("sealed")}); got != "" {
 		t.Fatalf("reasoning redacted content = %q", got)
 	}
 	assertRetryable(t, bedrockRetryable("ThrottlingException", 0, ""), true)

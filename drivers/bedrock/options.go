@@ -1,6 +1,8 @@
 package bedrock
 
 import (
+	"regexp"
+	"strconv"
 	"strings"
 
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
@@ -22,6 +24,13 @@ func bedrockFamilyFields(options ExecutionOptions) map[string]any {
 		}
 		if v := optionInt(opts, "top_k"); v != nil {
 			out["inferenceConfig"] = map[string]any{"topK": *v}
+		}
+		// Explicit effort passes through on every Nova version, including ones
+		// without known reasoning support; omission keeps the provider default.
+		if effort := optionString(opts, "effort"); effort == "none" {
+			out["reasoningConfig"] = map[string]any{"type": "disabled"}
+		} else if effort != "" {
+			out["reasoningConfig"] = map[string]any{"type": "enabled", "maxReasoningEffort": effort}
 		}
 	case strings.Contains(model, "meta"):
 		// Llama accepts no additional fields.
@@ -57,6 +66,21 @@ func bedrockFamilyFields(options ExecutionOptions) map[string]any {
 	case strings.Contains(model, "deepseek"):
 		// DeepSeek accepts no additional fields; see bedrockInferenceConfig for
 		// the stop and top_p omissions.
+	case bedrockIsGPT5(model):
+		if effort := bedrockOpenAIEffort(opts); effort != "" {
+			out["reasoning"] = map[string]any{"effort": effort}
+		}
+		text := map[string]any{}
+		if verbosity := optionString(opts, "verbosity"); verbosity != "" {
+			text["verbosity"] = verbosity
+		}
+		if options.ResultSchema != nil {
+			// Bedrock's OpenAI Converse adapter requires strict in addition to outputConfig.
+			text["format"] = map[string]any{"strict": true}
+		}
+		if len(text) > 0 {
+			out["text"] = text
+		}
 	case strings.Contains(model, "gpt-oss"):
 		if v := optionString(opts, "reasoning_effort"); v != "" {
 			out["reasoning_effort"] = v
@@ -125,4 +149,40 @@ func withoutBedrockOptions(options map[string]any, keys ...string) map[string]an
 		delete(out, key)
 	}
 	return out
+}
+
+// bedrockGPTVersionPattern matches closed-weight GPT generations in bare IDs,
+// regional or global profiles and ARNs. Restricted-access Daybreak models put a
+// "daybreak-<color>-" segment before the version they belong to, as in
+// openai.gpt-daybreak-blue-5.6-sol. gpt-oss has no version and does not match.
+var bedrockGPTVersionPattern = regexp.MustCompile(`(?:^|[./:])(?:openai\.)?gpt-(?:daybreak-[a-z]+-)?(\d+)(?:\.(\d+))?(?:-|[.:@]|$)`)
+
+// bedrockGPTVersion parses the GPT generation of a model ID.
+func bedrockGPTVersion(model string) (major, minor int, ok bool) {
+	match := bedrockGPTVersionPattern.FindStringSubmatch(strings.ToLower(model))
+	if match == nil {
+		return 0, 0, false
+	}
+	major, _ = strconv.Atoi(match[1])
+	if match[2] != "" {
+		minor, _ = strconv.Atoi(match[2])
+	}
+	return major, minor, true
+}
+
+// bedrockIsGPT5 reports whether a model is a closed-weight GPT of generation 5
+// or later. Those read reasoning and text controls as Converse additional
+// fields and accept temperature together with top_p.
+func bedrockIsGPT5(model string) bool {
+	major, _, ok := bedrockGPTVersion(model)
+	return ok && major >= 5
+}
+
+// bedrockOpenAIEffort returns the reasoning effort for OpenAI-style models: the
+// canonical effort option wins over its legacy reasoning_effort alias.
+func bedrockOpenAIEffort(options map[string]any) string {
+	if effort := optionString(options, "effort"); effort != "" {
+		return effort
+	}
+	return optionString(options, "reasoning_effort")
 }

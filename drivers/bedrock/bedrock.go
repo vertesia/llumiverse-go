@@ -1436,7 +1436,7 @@ func stripBedrockToolCachePoints(tools []brtypes.Tool) []brtypes.Tool {
 // bedrockInferenceConfig maps the generic model options (max_tokens,
 // temperature, top_p, stop_sequence) to a Converse InferenceConfiguration,
 // returning nil when none are set. DeepSeek accepts neither stop sequences nor
-// top_p, and other models get top_p only when temperature is unset.
+// top_p, and models other than GPT 5+ get top_p only when temperature is unset.
 func bedrockInferenceConfig(model string, options map[string]any) *brtypes.InferenceConfiguration {
 	cfg := &brtypes.InferenceConfiguration{}
 	if strings.Contains(strings.ToLower(model), "deepseek") {
@@ -1448,7 +1448,7 @@ func bedrockInferenceConfig(model string, options map[string]any) *brtypes.Infer
 	if v := optionFloat(options, "temperature"); v != nil {
 		cfg.Temperature = aws.Float32(float32(*v))
 	}
-	if v := optionFloat(options, "top_p"); v != nil && cfg.Temperature == nil {
+	if v := optionFloat(options, "top_p"); v != nil && (cfg.Temperature == nil || bedrockIsGPT5(model)) {
 		cfg.TopP = aws.Float32(float32(*v))
 	}
 	if stops := optionStringSlice(options, "stop_sequence"); len(stops) > 0 {
@@ -1749,14 +1749,12 @@ func bedrockIncludeThoughts(options ExecutionOptions) bool {
 }
 
 // bedrockReasoningDeltaText extracts displayable text from a streamed reasoning
-// delta, rendering redacted content as a placeholder and signatures as a
-// paragraph break.
+// delta, rendering signatures as a paragraph break. Redacted (encrypted)
+// content belongs only in the replayed conversation, never in visible output.
 func bedrockReasoningDeltaText(delta brtypes.ReasoningContentBlockDelta) string {
 	switch value := delta.(type) {
 	case *brtypes.ReasoningContentBlockDeltaMemberText:
 		return value.Value
-	case *brtypes.ReasoningContentBlockDeltaMemberRedactedContent:
-		return "[Redacted thinking: " + string(value.Value) + "]"
 	case *brtypes.ReasoningContentBlockDeltaMemberSignature:
 		return "\n\n"
 	default:
@@ -1766,7 +1764,7 @@ func bedrockReasoningDeltaText(delta brtypes.ReasoningContentBlockDelta) string 
 
 // bedrockReasoningContentText extracts displayable text from a complete
 // reasoning content block, appending a paragraph break when the block carries a
-// signature and rendering redacted content as a placeholder.
+// signature. Redacted content is not displayable and yields nothing.
 func bedrockReasoningContentText(block brtypes.ReasoningContentBlock) string {
 	switch value := block.(type) {
 	case *brtypes.ReasoningContentBlockMemberReasoningText:
@@ -1775,8 +1773,6 @@ func bedrockReasoningContentText(block brtypes.ReasoningContentBlock) string {
 			return text + "\n\n"
 		}
 		return text
-	case *brtypes.ReasoningContentBlockMemberRedactedContent:
-		return "[Redacted thinking: " + string(value.Value) + "]"
 	default:
 		return ""
 	}
