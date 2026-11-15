@@ -17,6 +17,11 @@ func finalizeBedrockConversation(conversation bedrockPrompt, options ExecutionOp
 	// Increment first so "strip after N turns" evaluates against the stored
 	// conversation after this model response has been added.
 	conversation.Turn++
+	// Bedrock reasoning signatures hash every prior message, so caller cleanup
+	// of a signed chain would make the next Converse request fail.
+	if bedrockHasReasoningSignature(conversation.Messages) {
+		return conversation
+	}
 	stripMedia := core.ShouldStripConversationMedia(conversation.Turn, options.StripImagesAfterTurns)
 	stripHeartbeats := core.ShouldStripConversationHeartbeats(conversation.Turn, options.StripHeartbeatsAfterTurns)
 	conversation.System = processBedrockSystemForConversation(conversation.System, options, stripHeartbeats)

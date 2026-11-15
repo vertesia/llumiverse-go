@@ -718,7 +718,7 @@ func (d *BedrockDriver) requestTextCompletion(ctx context.Context, prompt any, o
 		return nil, d.formatError(err, options.Model, "execute")
 	}
 	completion := extractBedrockCompletion(output, options)
-	completion.Conversation = finalizeBedrockConversation(appendBedrockResponseToConversation(bp, output), options)
+	completion.Conversation = finalizeBedrockConversation(appendBedrockResponseToConversation(bp, output, options.Model), options)
 	return completion, nil
 }
 
@@ -740,11 +740,13 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 	}
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: prompt}
+	native := &bedrockNativeStreamBlocks{}
 	go func() {
 		defer close(ch)
 		defer func() { _ = stream.Close() }()
 		state := bedrockStreamState{toolBlocks: map[int32]bedrockStreamingToolBlock{}}
 		for event := range stream.Events() {
+			native.collect(event)
 			chunk := state.chunk(event, options)
 			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
 				ch <- streamItem{Chunk: chunk}
@@ -755,7 +757,9 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 		}
 	}()
 	return newChannelStreamWithFinalizer(ch, completion, stream.Close, func(resp *ExecutionResponse) {
-		resp.Conversation = finalizeBedrockConversation(buildBedrockStreamingConversation(bp, &resp.Completion), options)
+		// The stored turn replays the provider's own blocks, reasoning included.
+		assistant := brtypes.Message{Role: brtypes.ConversationRoleAssistant, Content: bedrockReplayContent(native.content(), options.Model)}
+		resp.Conversation = finalizeBedrockConversation(appendBedrockAssistantMessage(bp, assistant), options)
 	}), nil
 }
 
@@ -952,7 +956,15 @@ func bedrockStoredContentBlock(raw any) brtypes.ContentBlock {
 			return &brtypes.ContentBlockMemberCachePoint{Value: cache}
 		}
 	}
+	if rawValue, ok := bedrockMapLookup(value, "reasoningContent", "ReasoningContent"); ok {
+		if block, ok := bedrockStoredReasoningBlock(rawValue); ok {
+			return block
+		}
+	}
 	if rawValue, ok := bedrockMapLookup(value, "Value"); ok {
+		if block, ok := bedrockStoredReasoningBlock(rawValue); ok {
+			return block
+		}
 		return bedrockStoredContentBlockValue(rawValue)
 	}
 	return nil
@@ -1151,36 +1163,25 @@ func bedrockIntValue(raw any) (int, bool) {
 }
 
 // appendBedrockResponseToConversation appends the model's response message to
-// the conversation, dropping reasoning blocks (which must not be replayed).
-func appendBedrockResponseToConversation(prompt bedrockPrompt, output *bedrockruntime.ConverseOutput) bedrockPrompt {
+// the conversation. Reasoning blocks are kept for replay (signed chains must be
+// replayed whole), except for models that reject them.
+func appendBedrockResponseToConversation(prompt bedrockPrompt, output *bedrockruntime.ConverseOutput, model string) bedrockPrompt {
 	if output == nil || output.Output == nil {
 		return prompt
 	}
 	if messageOutput, ok := output.Output.(*brtypes.ConverseOutputMemberMessage); ok {
 		msg := messageOutput.Value
-		msg.Content = filterBedrockReasoningBlocks(msg.Content)
-		prompt.Messages = mergeBedrockMessages(append(prompt.Messages, msg))
+		msg.Content = bedrockReplayContent(msg.Content, model)
+		return appendBedrockAssistantMessage(prompt, msg)
 	}
 	return prompt
 }
 
-// buildBedrockStreamingConversation reconstructs the assistant turn from the
-// accumulated streamed completion (text plus tool_use blocks) and appends it to
-// the conversation, since streaming yields no single response message.
-func buildBedrockStreamingConversation(prompt bedrockPrompt, completion *Completion) bedrockPrompt {
-	content := []brtypes.ContentBlock{}
-	if text := completionResultsToText(completion.Result); text != "" {
-		content = append(content, &brtypes.ContentBlockMemberText{Value: text})
-	}
-	for _, tool := range completion.ToolUse {
-		content = append(content, &brtypes.ContentBlockMemberToolUse{Value: brtypes.ToolUseBlock{
-			ToolUseId: aws.String(tool.ID),
-			Name:      aws.String(tool.ToolName),
-			Input:     brdoc.NewLazyDocument(bedrockToolInputDocument(tool.ToolInput)),
-		}})
-	}
-	if len(content) > 0 {
-		prompt.Messages = mergeBedrockMessages(append(prompt.Messages, brtypes.Message{Role: brtypes.ConversationRoleAssistant, Content: content}))
+// appendBedrockAssistantMessage appends an assistant turn to the conversation.
+// A turn without content is not stored.
+func appendBedrockAssistantMessage(prompt bedrockPrompt, message brtypes.Message) bedrockPrompt {
+	if len(message.Content) > 0 {
+		prompt.Messages = mergeBedrockMessages(append(prompt.Messages, message))
 	}
 	return prompt
 }
@@ -1512,15 +1513,6 @@ func extractBedrockCompletion(output *bedrockruntime.ConverseOutput, options Exe
 	return completion
 }
 
-// bedrockToolInputDocument returns a tool input as the plain value a Smithy
-// document encodes: the input object as a map, or nil when there is none.
-func bedrockToolInputDocument(input *JSONObject) any {
-	if input == nil {
-		return nil
-	}
-	return map[string]any(*input)
-}
-
 // documentToAny unmarshals a Smithy lazy document into a plain Go value,
 // returning nil on failure.
 func documentToAny(doc brdoc.Interface) any {
@@ -1578,7 +1570,7 @@ func bedrockFinishReason(reason brtypes.StopReason) string {
 	switch reason {
 	case brtypes.StopReasonEndTurn:
 		return "stop"
-	case brtypes.StopReasonMaxTokens:
+	case brtypes.StopReasonMaxTokens, brtypes.StopReasonModelContextWindowExceeded:
 		return "length"
 	case brtypes.StopReasonToolUse:
 		return "tool_use"
