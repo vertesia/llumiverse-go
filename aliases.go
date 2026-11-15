@@ -30,6 +30,8 @@ type ExecutionTokenUsage = common.ExecutionTokenUsage
 type PromptCacheMode = common.PromptCacheMode
 type PromptCacheDiagnostic = common.PromptCacheDiagnostic
 type ToolUsage = common.ToolUsage
+type ToolTokenUsage = common.ToolTokenUsage
+type AudioResult = common.AudioResult
 type ConversationCompactionOptions = common.ConversationCompactionOptions
 type CompactConversationOptions = common.CompactConversationOptions
 type ResultValidationError = common.ResultValidationError
@@ -48,6 +50,17 @@ type EmbeddingOutput = common.EmbeddingOutput
 type EmbeddingsTokenUsage = common.EmbeddingsTokenUsage
 type LlumiverseErrorContext = common.LlumiverseErrorContext
 type LlumiverseError = common.LlumiverseError
+
+type EmbeddingBatchModality = core.EmbeddingBatchModality
+type EmbeddingBatchState = core.EmbeddingBatchState
+type EmbeddingBatchCapability = core.EmbeddingBatchCapability
+type EmbeddingBatchArtifactStore = core.EmbeddingBatchArtifactStore
+type EmbeddingBatchJob = core.EmbeddingBatchJob
+type EmbeddingBatchJobOptions = core.EmbeddingBatchJobOptions
+type EmbeddingBatchCreateOptions = core.EmbeddingBatchCreateOptions
+type EmbeddingBatchRowOptions = core.EmbeddingBatchRowOptions
+type ParsedEmbeddingBatchResult = core.ParsedEmbeddingBatchResult
+type EmbeddingBatchAdapter = core.EmbeddingBatchAdapter
 
 type OpenAICompatibleOptions = openaidriver.OpenAICompatibleOptions
 type OpenAICompatibleDriver = openaidriver.OpenAICompatibleDriver

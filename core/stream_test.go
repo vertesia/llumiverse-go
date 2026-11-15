@@ -1,8 +1,11 @@
 package core
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 )
 
@@ -160,5 +163,237 @@ func TestChannelStreamHandlesNilCompletion(t *testing.T) {
 	}
 	if stream.Completion() != nil {
 		t.Fatalf("completion = %#v", stream.Completion())
+	}
+}
+
+// drainStream reads stream to the end and returns the first error other than io.EOF.
+func drainStream(t *testing.T, stream CompletionStream) error {
+	t.Helper()
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// streamToolChunks runs fragments through a channel stream, one chunk per fragment, with
+// finishReason on the last chunk, and returns the finished stream.
+func streamToolChunks(t *testing.T, finishReason string, fragments ...ToolUseChunk) (CompletionStream, error) {
+	t.Helper()
+	ch := make(chan StreamItem, len(fragments))
+	for i, fragment := range fragments {
+		chunk := CompletionChunk{ToolUse: []ToolUseChunk{fragment}}
+		if i == len(fragments)-1 {
+			chunk.FinishReason = finishReason
+		}
+		ch <- StreamItem{Chunk: chunk}
+	}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	return stream, drainStream(t, stream)
+}
+
+// Mirrors the TS client's "streaming tool_use thought_signature reassembly" tests.
+func TestChannelStreamReassemblesThoughtSignature(t *testing.T) {
+	t.Parallel()
+
+	raw := make([]byte, 9000)
+	for i := range raw {
+		raw[i] = byte((i*37 + 11) % 256)
+	}
+	signature := base64.StdEncoding.EncodeToString(raw)
+	args := `{"query":"weather in Paris"}`
+
+	t.Run("split across chunks", func(t *testing.T) {
+		const pieces = 5
+		sigSize := (len(signature) + pieces - 1) / pieces
+		argSize := (len(args) + pieces - 1) / pieces
+		var fragments []ToolUseChunk
+		for i := range pieces {
+			fragment := ToolUseChunk{
+				ID:               "get_weather",
+				ThoughtSignature: signature[min(i*sigSize, len(signature)):min((i+1)*sigSize, len(signature))],
+				ToolInput:        args[min(i*argSize, len(args)):min((i+1)*argSize, len(args))],
+			}
+			if i == 0 {
+				fragment.ToolName = "get_weather"
+			}
+			fragments = append(fragments, fragment)
+		}
+		stream, err := streamToolChunks(t, "tool_use", fragments...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools := stream.Completion().ToolUse
+		if len(tools) != 1 || tools[0].ThoughtSignature == nil || *tools[0].ThoughtSignature != signature {
+			t.Fatalf("signature not reassembled: %#v", tools)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(*tools[0].ThoughtSignature)
+		if err != nil || !bytes.Equal(decoded, raw) {
+			t.Fatalf("signature does not decode to the original bytes: %v", err)
+		}
+		if (*tools[0].ToolInput)["query"] != "weather in Paris" {
+			t.Fatalf("arguments = %#v", tools[0].ToolInput)
+		}
+	})
+
+	t.Run("only on a later chunk", func(t *testing.T) {
+		stream, err := streamToolChunks(t, "tool_use",
+			ToolUseChunk{ID: "plan", ToolName: "plan", ToolInput: `{"steps":`},
+			ToolUseChunk{ID: "plan", ToolInput: `[]}`, ThoughtSignature: signature},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tools := stream.Completion().ToolUse; len(tools) != 1 || *tools[0].ThoughtSignature != signature {
+			t.Fatalf("tools = %#v", tools)
+		}
+	})
+
+	t.Run("whole in a single chunk", func(t *testing.T) {
+		stream, err := streamToolChunks(t, "tool_use", ToolUseChunk{ID: "plan", ToolName: "plan", ToolInput: `{}`, ThoughtSignature: signature})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tools := stream.Completion().ToolUse; len(tools) != 1 || *tools[0].ThoughtSignature != signature {
+			t.Fatalf("tools = %#v", tools)
+		}
+	})
+}
+
+// Mirrors the TS client's "streams visible thoughts before the answer while preserving typed
+// results" test, and its media-boundary checks.
+func TestChannelStreamKeepsThoughtsTypedAndMediaDiscrete(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan StreamItem, 6)
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewThoughtsResult("reason-")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewThoughtsResult("one")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewTextResult("answer-one")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewVideoResult("gs://bucket/one.mp4")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewVideoResult("gs://bucket/two.mp4")}, FinishReason: "stop"}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	result := stream.Completion().Result
+	want := []struct{ kind, value string }{
+		{ResultTypeThoughts, "reason-one"},
+		{ResultTypeText, "answer-one"},
+		{ResultTypeVideo, "gs://bucket/one.mp4"},
+		{ResultTypeVideo, "gs://bucket/two.mp4"},
+	}
+	if len(result) != len(want) {
+		t.Fatalf("Result = %#v", result)
+	}
+	for i, w := range want {
+		if result[i].Type() != w.kind || result[i].String() != w.value {
+			t.Fatalf("Result[%d] = %s %q, want %s %q", i, result[i].Type(), result[i].String(), w.kind, w.value)
+		}
+	}
+	if text := CompletionResultsToText(result); text != "answer-one" {
+		t.Fatalf("answer text = %q, thoughts must not leak into it", text)
+	}
+}
+
+// Mirrors the TS client's service-tier capture: the tier a chunk reports reaches the completion,
+// and a later chunk without one does not erase it.
+func TestChannelStreamCapturesServiceTier(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewTextResult("answer")}, FinishReason: "stop", ServiceTier: "priority"}}
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(1), Result: Tokens(1)}}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.Completion().ServiceTier; got != "priority" {
+		t.Fatalf("ServiceTier = %q", got)
+	}
+}
+
+// Mirrors the TS client's "preserves terminal usage on a partial completion when the provider
+// stream fails": usage reported before a terminal error stays on the completion.
+func TestChannelStreamKeepsUsageReportedBeforeAnError(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(10), PromptCached: Tokens(4), PromptNew: Tokens(6), Result: Tokens(2), Total: Tokens(12)}}}
+	ch <- StreamItem{Err: errors.New("provider failed after usage")}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err == nil || err.Error() != "provider failed after usage" {
+		t.Fatalf("err = %v", err)
+	}
+	usage := stream.Completion().TokenUsage
+	if usage == nil || Count(usage.Prompt) != 10 || Count(usage.PromptCached) != 4 || Count(usage.Result) != 2 || Count(usage.Total) != 12 {
+		t.Fatalf("TokenUsage = %#v", usage)
+	}
+}
+
+// Mirrors the TS client's usage tests for the newer fields: cache writes by retention, generated
+// image tokens, provider cost and hosted tool usage all reach the completion.
+func TestChannelStreamMergesNewerUsageFields(t *testing.T) {
+	t.Parallel()
+
+	imageGeneration := &ToolUsage{ImageGeneration: &ToolTokenUsage{Prompt: Tokens(5), Result: Tokens(7), Total: Tokens(12)}}
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(10), PromptCached: Tokens(4), PromptNew: Tokens(3), Result: Tokens(1)}}}
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{
+		Prompt:              Tokens(10),
+		PromptCacheWrite:    Tokens(3),
+		PromptCacheWrite1H:  Tokens(2),
+		PromptCacheWrite12H: Tokens(1),
+		Result:              Tokens(2),
+		ResultImage:         Tokens(2),
+		ProviderCostUsd:     Ptr(0.25),
+		ToolUsage:           imageGeneration,
+	}}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	want := &ExecutionTokenUsage{
+		Prompt:              Tokens(10),
+		PromptCached:        Tokens(4),
+		PromptCacheWrite:    Tokens(3),
+		PromptCacheWrite1H:  Tokens(2),
+		PromptCacheWrite12H: Tokens(1),
+		PromptNew:           Tokens(3),
+		Result:              Tokens(2),
+		ResultImage:         Tokens(2),
+		Total:               Tokens(12),
+		ProviderCostUsd:     Ptr(0.25),
+		ToolUsage:           imageGeneration,
+	}
+	if got := stream.Completion().TokenUsage; !reflect.DeepEqual(got, want) {
+		t.Fatalf("TokenUsage = %#v", got)
+	}
+}
+
+// Mirrors the TS client's "keeps hosted tool usage reported without token counts, without
+// inventing zero counts".
+func TestChannelStreamKeepsToolUsageWithoutTokenCounts(t *testing.T) {
+	t.Parallel()
+
+	webSearch := &ToolUsage{WebSearchRequests: Ptr(2.0)}
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewTextResult("answer")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{ToolUsage: webSearch}}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.Completion().TokenUsage; !reflect.DeepEqual(got, &ExecutionTokenUsage{ToolUsage: webSearch}) {
+		t.Fatalf("TokenUsage = %#v", got)
 	}
 }
