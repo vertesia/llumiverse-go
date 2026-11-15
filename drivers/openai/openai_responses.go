@@ -207,10 +207,16 @@ func openAIResponseFileParts(ctx context.Context, files []DataSource, options Ex
 // conversation state appended.
 func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context, prompt any, options ExecutionOptions) (*Completion, error) {
 	rp := prompt.(openAIResponsesPrompt)
+	if err := d.assertOpenAIConversationShape(options, "execute"); err != nil {
+		return nil, err
+	}
 	if isOpenAIImageModel(options.Model) {
 		return d.requestOpenAIImageGeneration(ctx, rp, options)
 	}
 	input := openAIResponsesInput(options.Conversation, rp.Items, openAIUseTools(options))
+	if options.CompactConversation != nil {
+		return d.compactOpenAIConversation(ctx, input, options, "execute")
+	}
 	payload, err := d.responsePayload(input, options, false)
 	if err != nil {
 		return nil, err
@@ -249,7 +255,22 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 	rp := prompt.(openAIResponsesPrompt)
 	// Image generation models use the Images API path and do not stream through
 	// Responses; callers should use Execute for those models.
+	if err := d.assertOpenAIConversationShape(options, "stream"); err != nil {
+		return nil, err
+	}
 	input := openAIResponsesInput(options.Conversation, rp.Items, openAIUseTools(options))
+	if options.CompactConversation != nil {
+		completion, err := d.compactOpenAIConversation(ctx, input, options, "stream")
+		if err != nil {
+			return nil, err
+		}
+		ch := make(chan streamItem, 1)
+		ch <- streamItem{Chunk: CompletionChunk{Result: completion.Result, TokenUsage: completion.TokenUsage, FinishReason: completion.FinishReason}}
+		close(ch)
+		return newChannelStreamWithFinalizer(ch, &ExecutionResponse{Prompt: prompt}, func() error { return nil }, func(resp *ExecutionResponse) {
+			resp.Conversation = completion.Conversation
+		}), nil
+	}
 	payload, err := d.responsePayload(input, options, true)
 	if err != nil {
 		return nil, err
@@ -365,6 +386,9 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 	}
 	if text := d.openAIResponseTextConfig(options); text != nil {
 		payload["text"] = text
+	}
+	if management := openAIResponsesContextManagement(options.Compaction); management != nil {
+		payload["context_management"] = management
 	}
 	return payload, nil
 }

@@ -195,7 +195,7 @@ func buildOpenAIResponsesConversation(input []responseItem, output []responseIte
 		}
 	}
 	_, turn, _ := openAIResponsesConversation(options.Conversation)
-	return finalizeOpenAIResponsesItems(out, turn+1, options)
+	return finalizeOpenAIResponsesItems(trimOpenAIConversationToCompaction(out), turn+1, options)
 }
 
 // finalizeOpenAIResponsesItems applies the retention rules for the given turn.
