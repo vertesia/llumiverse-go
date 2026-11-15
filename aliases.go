@@ -8,6 +8,7 @@ import (
 	anthropicdriver "github.com/vertesia/llumiverse-go/drivers/anthropic"
 	azuredriver "github.com/vertesia/llumiverse-go/drivers/azurefoundry"
 	bedrockdriver "github.com/vertesia/llumiverse-go/drivers/bedrock"
+	mantledriver "github.com/vertesia/llumiverse-go/drivers/bedrockmantle"
 	openaidriver "github.com/vertesia/llumiverse-go/drivers/openai"
 	vertexdriver "github.com/vertesia/llumiverse-go/drivers/vertexai"
 )
@@ -77,6 +78,8 @@ type BedrockModelAPI = bedrockdriver.ModelAPI
 type BedrockConverseStream = bedrockdriver.ConverseStream
 type VertexAIOptions = vertexdriver.VertexAIOptions
 type VertexAIDriver = vertexdriver.VertexAIDriver
+type BedrockMantleOptions = mantledriver.BedrockMantleOptions
+type BedrockMantleDriver = mantledriver.BedrockMantleDriver
 type AzureFoundryOptions = azuredriver.AzureFoundryOptions
 type AzureFoundryDriver = azuredriver.AzureFoundryDriver
 type AzureOpenAIOptions = azuredriver.AzureOpenAIOptions
@@ -89,6 +92,7 @@ const (
 	ProviderAnthropic        = common.ProviderAnthropic
 	ProviderVertexAI         = common.ProviderVertexAI
 	ProviderBedrock          = common.ProviderBedrock
+	ProviderBedrockMantle    = common.ProviderBedrockMantle
 	ProviderAzureFoundry     = common.ProviderAzureFoundry
 	ProviderAzureOpenAI      = common.ProviderAzureOpenAI
 
@@ -130,6 +134,18 @@ var (
 	NewAudioResult    = common.NewAudioResult
 )
 
+// Result validation, re-exported from package core.
+const (
+	ResultValidationCodeJSON   = core.ResultValidationCodeJSON
+	ResultValidationCodeSchema = core.ResultValidationCodeSchema
+)
+
+// ValidateResult checks completion results against a JSON Schema; see core.ValidateResult. Execute and Stream
+// already apply it when ExecutionOptions.ResultSchema is set.
+func ValidateResult(results []CompletionResult, schema map[string]any) ([]CompletionResult, *ResultValidationError) {
+	return core.ValidateResult(results, schema)
+}
+
 // Ptr returns a pointer to v, for the optional fields of the generated types.
 func Ptr[T any](v T) *T {
 	return &v
@@ -163,6 +179,11 @@ func NewBedrockDriver(ctx context.Context, options BedrockOptions) (*BedrockDriv
 // NewBedrockDriverWithClient injects Bedrock clients for tests or custom wiring.
 func NewBedrockDriverWithClient(options BedrockOptions, runtime BedrockRuntimeAPI, models BedrockModelAPI) *BedrockDriver {
 	return bedrockdriver.NewBedrockDriverWithClient(options, runtime, models)
+}
+
+// NewBedrockMantleDriver creates an AWS Bedrock Mantle driver.
+func NewBedrockMantleDriver(ctx context.Context, options BedrockMantleOptions) (*BedrockMantleDriver, error) {
+	return mantledriver.NewBedrockMantleDriver(ctx, options)
 }
 
 // NewVertexAIDriver creates a Gemini Enterprise Agent Platform driver.

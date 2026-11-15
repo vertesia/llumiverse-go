@@ -29,13 +29,19 @@ application architecture.
 | Anthropic Claude (Messages API) | ✅ | ✅ | ✅ | ✅ | ✅ | — | — |
 | AWS Bedrock (Converse / InvokeModel) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (Nova / Titan / Cohere / Marengo) | ✅ (Titan / Nova Canvas / Stable Diffusion) |
 | Gemini Enterprise Agent Platform¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (Imagen / Gemini) |
+| Microsoft Foundry / Azure OpenAI | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (gpt-image / dall-e) |
+| AWS Bedrock Mantle² | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
 
 ¹ Formerly Vertex AI. The package keeps the `vertexai` provider and package
 names for compatibility, and also serves Claude partner models on the platform.
 
+² The Bedrock endpoint that serves models on the OpenAI Responses, Chat
+Completions and Anthropic Messages APIs; the driver picks the protocol by model
+family.
+
 ## Requirements
 
-- Go 1.25 or newer.
+- Go 1.26.4 or newer.
 - Provider credentials for whichever drivers you use (see
   [`.env.example`](.env.example)).
 
@@ -78,6 +84,11 @@ claudeDriver, _ := llumiverse.NewAnthropicDriver(llumiverse.AnthropicOptions{
 // AWS Bedrock (uses the standard AWS credential chain / IAM role)
 bedrockDriver, _ := llumiverse.NewBedrockDriver(context.Background(), llumiverse.BedrockOptions{
     Region: "us-east-1",
+})
+
+// AWS Bedrock Mantle (a Bedrock API key, or the standard AWS credential chain)
+mantleDriver, _ := llumiverse.NewBedrockMantleDriver(context.Background(), llumiverse.BedrockMantleOptions{
+    Region: "us-west-2",
 })
 
 // Gemini Enterprise Agent Platform (uses Application Default Credentials)
@@ -293,7 +304,9 @@ core/                   Driver helpers, streams, prompts, and conversations
 drivers/openai          OpenAI and OpenAI-compatible driver
 drivers/anthropic       direct Claude driver
 drivers/bedrock         AWS Bedrock driver
+drivers/bedrockmantle   AWS Bedrock Mantle driver
 drivers/vertexai        Gemini Enterprise Agent Platform driver
+drivers/azurefoundry    Microsoft Foundry and Azure OpenAI drivers
 drivers/internal/claude shared Claude prompt/stream/conversation logic
 examples/               runnable usage examples
 ```
@@ -308,6 +321,8 @@ go run ./examples/openai-chat
 go run ./examples/claude-chat
 go run ./examples/vertexai-gemini
 go run ./examples/bedrock-embeddings
+go run ./examples/bedrock-mantle-chat
+go run ./examples/azurefoundry-chat
 ```
 
 ## Tests

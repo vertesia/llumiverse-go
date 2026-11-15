@@ -9,8 +9,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/vertesia/llumiverse-go/core"
 )
 
@@ -75,7 +75,19 @@ func NewOpenAICompatibleDriver(options OpenAICompatibleOptions) (*OpenAICompatib
 	for key, value := range options.DefaultHeaders {
 		sdkOptions = append(sdkOptions, option.WithHeader(key, value))
 	}
-	return &OpenAICompatibleDriver{options: options, client: client, sdk: openai.NewClient(sdkOptions...)}, nil
+	return &OpenAICompatibleDriver{options: options, client: client, sdk: newSDKClient(sdkOptions...)}, nil
+}
+
+// newSDKClient builds the openai-go client from the given options alone. openai.NewClient would also apply
+// OPENAI_* environment variables (organization, project, admin key, custom headers), which the library does not
+// read: configuration comes from OpenAICompatibleOptions.
+func newSDKClient(opts ...option.RequestOption) openai.Client {
+	opts = append([]option.RequestOption{option.WithEnvironmentProduction()}, opts...)
+	return openai.Client{
+		Options:    opts,
+		Models:     openai.NewModelService(opts...),
+		Embeddings: openai.NewEmbeddingService(opts...),
+	}
 }
 
 // Provider returns the configured provider (ProviderOpenAI for the first-party

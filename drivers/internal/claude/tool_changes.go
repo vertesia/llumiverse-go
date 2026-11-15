@@ -21,13 +21,16 @@ const (
 	ProviderNameAnthropic = "anthropic"
 	ProviderNameVertexAI  = "vertexai"
 	ProviderNameBedrock   = "bedrock"
+	// ProviderNameBedrockMantle is Claude on the Bedrock Mantle Messages API.
+	ProviderNameBedrockMantle = "bedrock_mantle"
 )
 
 // claudeToolChangeProviders are the platforms whose Claude endpoint accepts mid-conversation tool changes.
 var claudeToolChangeProviders = map[string]bool{
-	ProviderNameAnthropic: true,
-	ProviderNameVertexAI:  true,
-	ProviderNameBedrock:   true,
+	ProviderNameAnthropic:     true,
+	ProviderNameVertexAI:      true,
+	ProviderNameBedrock:       true,
+	ProviderNameBedrockMantle: true,
 }
 
 // claudeToolState is stored with the conversation so later requests replay tools unchanged.
