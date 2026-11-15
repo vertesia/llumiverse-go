@@ -42,6 +42,9 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 			if err := checkGeminiResponseFinishReasons(hop); err != nil {
 				return err
 			}
+			if err := checkGeminiAudioOutput(hop); err != nil {
+				return err
+			}
 			if token == "" {
 				response = hop
 			} else {
@@ -140,6 +143,9 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 					return err
 				}
 				if err := checkGeminiResponseFinishReasons(response); err != nil {
+					return err
+				}
+				if err := checkGeminiAudioOutput(response); err != nil {
 					return err
 				}
 				hop.observe(&response)

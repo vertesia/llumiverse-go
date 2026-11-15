@@ -37,6 +37,7 @@ type ModelSearchPayload = common.ModelSearchPayload
 type LlumiverseError = common.LlumiverseError
 type LlumiverseErrorContext = common.LlumiverseErrorContext
 type PromptCacheDiagnostic = common.PromptCacheDiagnostic
+type AudioResult = common.AudioResult
 type streamItem = core.StreamItem
 type sseEvent = core.SSEEvent
 
@@ -54,6 +55,7 @@ const (
 	ResultTypeText  = common.ResultTypeText
 	ResultTypeJSON  = common.ResultTypeJSON
 	ResultTypeImage = common.ResultTypeImage
+	ResultTypeAudio = common.ResultTypeAudio
 
 	PromptCacheModeOff      = common.PromptCacheModeOff
 	PromptCacheModeRequired = common.PromptCacheModeRequired
@@ -92,6 +94,8 @@ var (
 	newLlumiverseError            = common.NewLlumiverseError
 	newTextResult                 = common.NewTextResult
 	newImageResult                = common.NewImageResult
+	newJSONResult                 = common.NewJSONResult
+	newAudioResult                = common.NewAudioResult
 	newThoughtsResult             = common.NewThoughtsResult
 	newVideoResult                = common.NewVideoResult
 	leaseCompletionStream         = core.LeaseCompletionStream

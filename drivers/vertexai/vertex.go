@@ -185,6 +185,11 @@ func (d *VertexAIDriver) CreatePrompt(ctx context.Context, segments []PromptSegm
 	if isClaudeModel(options.Model) {
 		return internalclaude.FormatPrompt(ctx, segments, options)
 	}
+	if isGeminiFileAudioModel(options.Model) {
+		if err := validateGeminiFileAudioPrompt(segments, options); err != nil {
+			return nil, err
+		}
+	}
 	return d.formatGeminiPrompt(ctx, segments, options)
 }
 
@@ -356,6 +361,9 @@ func (d *VertexAIDriver) requestTextCompletion(ctx context.Context, prompt any, 
 	if isClaudeModel(options.Model) {
 		return d.requestVertexClaude(ctx, prompt.(internalclaude.Prompt), options)
 	}
+	if isGeminiFileAudioModel(options.Model) {
+		return d.requestGeminiFileAudio(ctx, prompt.(geminiPrompt), options)
+	}
 	return d.requestGemini(ctx, prompt.(geminiPrompt), options)
 }
 
@@ -371,6 +379,9 @@ func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt
 	}
 	if isClaudeModel(options.Model) {
 		return d.requestVertexClaudeStream(ctx, prompt.(internalclaude.Prompt), options)
+	}
+	if isGeminiFileAudioModel(options.Model) {
+		return d.requestGeminiFileAudioStream(ctx, prompt.(geminiPrompt), options)
 	}
 	return d.requestGeminiStream(ctx, prompt.(geminiPrompt), options)
 }
@@ -694,6 +705,8 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 			}
 			if isGeminiOmniVideoModel(short) {
 				listed.Type, listed.CanStream, listed.ToolSupport = ptr(ModelType("video")), ptr(false), ptr(false)
+			} else if item.publisher == "google" && isGeminiFileAudioModel(short) {
+				listed.Type, listed.CanStream = ptr(ModelType("audio")), ptr(false)
 			}
 			if item.publisher == "google" && (isGeminiWithoutRegionalEndpoints(short) || isGeminiOmniVideoModel(short)) {
 				// Models without regional endpoints are listed once, under global.
