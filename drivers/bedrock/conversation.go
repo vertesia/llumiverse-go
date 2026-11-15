@@ -17,6 +17,8 @@ func finalizeBedrockConversation(conversation bedrockPrompt, options ExecutionOp
 	// Increment first so "strip after N turns" evaluates against the stored
 	// conversation after this model response has been added.
 	conversation.Turn++
+	// Inline audio never stays in history, whatever the retention options.
+	conversation.Messages = stripBedrockInlineAudio(conversation.Messages)
 	// Bedrock reasoning signatures hash every prior message, so caller cleanup
 	// of a signed chain would make the next Converse request fail.
 	if bedrockHasReasoningSignature(conversation.Messages) {
@@ -114,6 +116,40 @@ func processBedrockToolResultForConversation(blocks []brtypes.ToolResultContentB
 			continue
 		}
 		out = append(out, block)
+	}
+	return out
+}
+
+// stripBedrockInlineAudio replaces inline audio blocks with
+// core.ConversationAudioPlaceholder, as the TS client does for every stored
+// conversation. Audio referenced by S3 location is kept. Messages without
+// inline audio are returned as they are; the others get new content slices.
+func stripBedrockInlineAudio(messages []brtypes.Message) []brtypes.Message {
+	var out []brtypes.Message
+	for i, message := range messages {
+		changed := false
+		content := make([]brtypes.ContentBlock, 0, len(message.Content))
+		for _, block := range message.Content {
+			if audio, ok := block.(*brtypes.ContentBlockMemberAudio); ok {
+				if _, inline := audio.Value.Source.(*brtypes.AudioSourceMemberBytes); inline {
+					content = append(content, &brtypes.ContentBlockMemberText{Value: core.ConversationAudioPlaceholder})
+					changed = true
+					continue
+				}
+			}
+			content = append(content, block)
+		}
+		if !changed {
+			continue
+		}
+		if out == nil {
+			out = append([]brtypes.Message(nil), messages...)
+		}
+		message.Content = content
+		out[i] = message
+	}
+	if out == nil {
+		return messages
 	}
 	return out
 }
