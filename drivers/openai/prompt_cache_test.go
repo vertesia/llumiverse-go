@@ -122,3 +122,25 @@ func TestOpenAIResponsesSchemaSuffixKeepsPromptCache(t *testing.T) {
 		t.Fatalf("text = %s", got)
 	}
 }
+
+// Mirrors the TS service tier tests: the tier is sent and the tier the
+// provider reports is captured, streamed or not.
+func TestOpenAIResponsesServiceTier(t *testing.T) {
+	t.Parallel()
+
+	body, resp, err := executeResponses(t, ExecutionOptions{ModelOptions: map[string]any{"service_tier": "flex"}},
+		`{"id":"r","status":"completed","service_tier":"flex","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["service_tier"] != "flex" || resp.ServiceTier != "flex" {
+		t.Fatalf("body tier %v, response tier %q", body["service_tier"], resp.ServiceTier)
+	}
+	stream, err := streamResponses(t, ExecutionOptions{}, `{"type":"response.completed","response":{"id":"r","status":"completed","service_tier":"priority","output":[]}}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stream.ServiceTier != "priority" {
+		t.Fatalf("stream tier = %q", stream.ServiceTier)
+	}
+}

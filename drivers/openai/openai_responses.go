@@ -259,6 +259,10 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 		// Encrypted reasoning items let the next turn continue the same reasoning.
 		payload["include"] = []string{"reasoning.encrypted_content"}
 	}
+	// Provider tiers are passed through so values newer than this client still work.
+	if tier := optionString(options.ModelOptions, "service_tier"); tier != "" {
+		payload["service_tier"] = tier
+	}
 	if len(options.Labels) > 0 {
 		payload["metadata"] = options.Labels
 	}
@@ -325,6 +329,7 @@ type responsesResponse struct {
 	IncompleteDetails *responsesIncompleteDetails `json:"incomplete_details"`
 	Output            []responsesOutputItem       `json:"output"`
 	Usage             *responsesUsage             `json:"usage"`
+	ServiceTier       string                      `json:"service_tier"`
 }
 
 // responsesError is the error of a failed response or of an error stream event.
@@ -419,6 +424,7 @@ func extractOpenAIResponseCompletion(response *responsesResponse, includeThought
 		TokenUsage:   openAIResponseUsage(response.Usage),
 		ToolUse:      tools,
 		FinishReason: openAIResponseFinishReason(response, len(tools) > 0),
+		ServiceTier:  response.ServiceTier,
 	}
 	if len(completion.Result) == 0 && len(completion.ToolUse) == 0 {
 		completion.Result = []CompletionResult{newTextResult("")}
@@ -638,7 +644,11 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (Completi
 		}
 		s.final = event.Response
 		tools := openAIResponseToolUses(event.Response.Output)
-		return CompletionChunk{FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0), TokenUsage: openAIResponseUsage(event.Response.Usage)}, nil
+		return CompletionChunk{
+			FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0),
+			TokenUsage:   openAIResponseUsage(event.Response.Usage),
+			ServiceTier:  event.Response.ServiceTier,
+		}, nil
 	}
 	return CompletionChunk{}, nil
 }
