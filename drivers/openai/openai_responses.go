@@ -390,6 +390,15 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 	if management := openAIResponsesContextManagement(options.Compaction); management != nil {
 		payload["context_management"] = management
 	}
+	// Supplied compatible options are kept even though Responses does not declare them.
+	if seed, ok := mo["seed"]; ok && seed != nil {
+		payload["seed"] = seed
+	}
+	// Caller extensions go below the fields llumiverse sets, which take precedence.
+	if extra := optionMap(mo, "extra_body"); len(extra) > 0 {
+		payload["extra_body"] = extra
+		payload = MergeChatCompletionsExtraBody(payload)
+	}
 	return payload, nil
 }
 

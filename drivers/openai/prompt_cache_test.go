@@ -102,6 +102,28 @@ func TestOpenAIResponsesPromptCacheTTL(t *testing.T) {
 	}
 }
 
+// Mirrors the TS extra_body and seed tests: extensions reach the body root
+// without replacing the fields llumiverse sets, and a seed is passed through.
+func TestOpenAIResponsesExtraBodyAndSeed(t *testing.T) {
+	t.Parallel()
+
+	body, _, err := executeResponses(t, ExecutionOptions{ModelOptions: map[string]any{
+		"seed":       7,
+		"max_tokens": 50,
+		"extra_body": map[string]any{"provider_flag": true, "max_output_tokens": 999, "model": "other"},
+	}}, okResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body["seed"] != float64(7) || body["provider_flag"] != true || body["max_output_tokens"] != float64(50) || body["model"] != "gpt-4.1" || body["extra_body"] != nil {
+		t.Fatalf("body = %#v", body)
+	}
+	body, _, err = executeResponses(t, ExecutionOptions{}, okResponse)
+	if _, ok := body["seed"]; err != nil || ok {
+		t.Fatalf("no seed: %v, %#v", err, body)
+	}
+}
+
 func TestOpenAIResponsesUsageReadsCacheWrites(t *testing.T) {
 	t.Parallel()
 
