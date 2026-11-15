@@ -69,11 +69,20 @@ type bedrockNativeBlock struct {
 // bedrockNativeStreamBlocks rebuilds the assistant message of a ConverseStream
 // response from its events, so the stored conversation replays the provider's
 // own blocks (reasoning, signatures, redacted reasoning, text and tool calls)
-// rather than the normalized output. It is shared between the stream goroutine
-// and the stream finalizer, which can run early on Close.
+// rather than the normalized output. It also keeps the service tier the stream
+// metadata reports. It is shared between the stream goroutine and the stream
+// finalizer, which can run early on Close.
 type bedrockNativeStreamBlocks struct {
-	mu     sync.Mutex
-	blocks map[int32]*bedrockNativeBlock
+	mu          sync.Mutex
+	blocks      map[int32]*bedrockNativeBlock
+	serviceTier string
+}
+
+// tier returns the service tier reported by the stream metadata, if any.
+func (b *bedrockNativeStreamBlocks) tier() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.serviceTier
 }
 
 // collect folds one stream event into the native blocks.
@@ -84,6 +93,10 @@ func (b *bedrockNativeStreamBlocks) collect(event brtypes.ConverseStreamOutput) 
 		b.blocks = map[int32]*bedrockNativeBlock{}
 	}
 	switch value := event.(type) {
+	case *brtypes.ConverseStreamOutputMemberMetadata:
+		if value.Value.ServiceTier != nil {
+			b.serviceTier = string(value.Value.ServiceTier.Type)
+		}
 	case *brtypes.ConverseStreamOutputMemberContentBlockStart:
 		if tool, ok := value.Value.Start.(*brtypes.ContentBlockStartMemberToolUse); ok {
 			b.blocks[bedrockContentBlockIndex(value.Value.ContentBlockIndex)] = &bedrockNativeBlock{

@@ -748,7 +748,7 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 		for event := range stream.Events() {
 			native.collect(event)
 			chunk := state.chunk(event, options)
-			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
+			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil || chunk.ServiceTier != "" {
 				ch <- streamItem{Chunk: chunk}
 			}
 		}
@@ -757,6 +757,9 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 		}
 	}()
 	return newChannelStreamWithFinalizer(ch, completion, stream.Close, func(resp *ExecutionResponse) {
+		if tier := native.tier(); tier != "" {
+			resp.ServiceTier = tier
+		}
 		// The stored turn replays the provider's own blocks, reasoning included.
 		assistant := brtypes.Message{Role: brtypes.ConversationRoleAssistant, Content: bedrockReplayContent(native.content(), options.Model)}
 		resp.Conversation = finalizeBedrockConversation(appendBedrockAssistantMessage(bp, assistant), options)
@@ -778,6 +781,7 @@ func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOpt
 		InferenceConfig: bedrockInferenceConfig(options.ModelOptions),
 		RequestMetadata: options.Labels,
 		OutputConfig:    bedrockOutputConfig(options),
+		ServiceTier:     bedrockServiceTier(options.ModelOptions),
 	}
 	if len(options.Tools) > 0 {
 		input.ToolConfig = &brtypes.ToolConfiguration{Tools: bedrockTools(options.Tools)}
@@ -790,6 +794,17 @@ func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOpt
 		applyBedrockClaudeCache(input, options)
 	}
 	return input
+}
+
+// bedrockServiceTier returns the Converse service tier for the service_tier
+// model option, or nil when the caller did not set one. The value is passed
+// through as is, so tiers newer than the SDK enum still reach Bedrock.
+func bedrockServiceTier(options map[string]any) *brtypes.ServiceTier {
+	tier := optionString(options, "service_tier")
+	if tier == "" {
+		return nil
+	}
+	return &brtypes.ServiceTier{Type: brtypes.ServiceTierType(tier)}
 }
 
 // converseStreamInput builds a ConverseStream request by copying the fields of
@@ -805,6 +820,7 @@ func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options Execut
 		AdditionalModelRequestFields: converse.AdditionalModelRequestFields,
 		RequestMetadata:              converse.RequestMetadata,
 		OutputConfig:                 converse.OutputConfig,
+		ServiceTier:                  converse.ServiceTier,
 	}
 }
 
@@ -1476,6 +1492,9 @@ func extractBedrockCompletion(output *bedrockruntime.ConverseOutput, options Exe
 		TokenUsage:   bedrockUsage(output.Usage),
 		FinishReason: bedrockFinishReason(output.StopReason),
 	}
+	if output.ServiceTier != nil {
+		completion.ServiceTier = string(output.ServiceTier.Type)
+	}
 	if options.IncludeOriginalResponse {
 		completion.OriginalResponse = output
 	}
@@ -1607,7 +1626,11 @@ func (s *bedrockStreamState) chunk(event brtypes.ConverseStreamOutput, options E
 	case *brtypes.ConverseStreamOutputMemberMessageStop:
 		return CompletionChunk{FinishReason: bedrockFinishReason(value.Value.StopReason)}
 	case *brtypes.ConverseStreamOutputMemberMetadata:
-		return CompletionChunk{TokenUsage: bedrockUsage(value.Value.Usage)}
+		chunk := CompletionChunk{TokenUsage: bedrockUsage(value.Value.Usage)}
+		if value.Value.ServiceTier != nil {
+			chunk.ServiceTier = string(value.Value.ServiceTier.Type)
+		}
+		return chunk
 	}
 	return CompletionChunk{}
 }
