@@ -37,6 +37,12 @@ type VertexAIOptions struct {
 	TokenSource oauth2.TokenSource
 	// HTTPClient overrides the default HTTP client.
 	HTTPClient *http.Client
+	// DisableGeminiContextCache turns off explicit Vertex context caching, which
+	// otherwise runs for Gemini executions that set PromptCacheKey.
+	DisableGeminiContextCache bool
+	// GeminiContextCacheTTLSeconds is the lifetime of a Gemini cachedContents
+	// resource when the execution sets no PromptCacheTTLSeconds (default 1800).
+	GeminiContextCacheTTLSeconds int
 }
 
 // VertexAIDriver implements Driver for Gemini Enterprise Agent Platform Gemini,
@@ -45,6 +51,8 @@ type VertexAIOptions struct {
 type VertexAIDriver struct {
 	options VertexAIOptions
 	client  *http.Client
+	// contextCache memoizes Gemini cachedContents resources; nil when disabled.
+	contextCache *geminiContextCacheManager
 }
 
 // NewVertexAIDriver creates a Gemini Enterprise Agent Platform driver using the supplied token source or ADC.
@@ -61,7 +69,11 @@ func NewVertexAIDriver(options VertexAIOptions) (*VertexAIDriver, error) {
 	} else if hasHTTPTimeout(options.HTTPTimeout) {
 		client = newHTTPClient(client, options.HTTPTimeout)
 	}
-	return &VertexAIDriver{options: options, client: client}, nil
+	driver := &VertexAIDriver{options: options, client: client}
+	if !options.DisableGeminiContextCache {
+		driver.contextCache = newGeminiContextCacheManager(options.GeminiContextCacheTTLSeconds)
+	}
+	return driver, nil
 }
 
 // Provider returns ProviderVertexAI, the stable provider ID retained for the

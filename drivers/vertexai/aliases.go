@@ -36,6 +36,7 @@ type AIModel = common.AIModel
 type ModelSearchPayload = common.ModelSearchPayload
 type LlumiverseError = common.LlumiverseError
 type LlumiverseErrorContext = common.LlumiverseErrorContext
+type PromptCacheDiagnostic = common.PromptCacheDiagnostic
 type streamItem = core.StreamItem
 type sseEvent = core.SSEEvent
 
@@ -53,6 +54,9 @@ const (
 	ResultTypeText  = common.ResultTypeText
 	ResultTypeJSON  = common.ResultTypeJSON
 	ResultTypeImage = common.ResultTypeImage
+
+	PromptCacheModeOff      = common.PromptCacheModeOff
+	PromptCacheModeRequired = common.PromptCacheModeRequired
 
 	EmbeddingTaskQuery    = common.EmbeddingTaskQuery
 	EmbeddingTaskDocument = common.EmbeddingTaskDocument

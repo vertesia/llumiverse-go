@@ -134,6 +134,10 @@ func formatGeminiError(err error, model string, operation string) error {
 		// A terminal finish reason has no HTTP status; the reason names the error.
 		return newLlumiverseError(finishErr.Error(), finishErr.retryable, context, err, 0, finishErr.finishReason)
 	}
+	var cacheErr *geminiContextCacheRequiredError
+	if errors.As(err, &cacheErr) {
+		return newLlumiverseError(cacheErr.Error(), geminiErrorRetryable(0, cacheErr.Error()), context, err, 0, "GeminiContextCacheRequiredError")
+	}
 	var mediaErr *geminiInlineMediaLimitError
 	if errors.As(err, &mediaErr) {
 		return newLlumiverseError(mediaErr.Error(), ptr(false), context, err, mediaErr.StatusCode(), "GeminiInlineMediaLimitError")

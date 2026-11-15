@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"net/http"
 	"strings"
 	"sync"
@@ -28,30 +29,40 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 	addGeminiServiceTierHeaders(headers, options.ModelOptions)
 	payload := d.geminiPayload(prompt, options)
 	var response geminiResponse
-	for token := ""; ; {
-		var hop geminiResponse
-		if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, payload, &hop); err != nil {
-			return nil, d.formatError(err, options.Model, "execute")
+	diagnostic, err := d.sendWithGeminiContextCache(ctx, options, payload, d.geminiLocation(options.Model), func(body map[string]any) error {
+		// Continuation hops add their token to a copy, so a fallback to another
+		// payload starts clean.
+		body = maps.Clone(body)
+		response = geminiResponse{}
+		for token := ""; ; {
+			var hop geminiResponse
+			if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, body, &hop); err != nil {
+				return err
+			}
+			if err := checkGeminiResponseFinishReasons(hop); err != nil {
+				return err
+			}
+			if token == "" {
+				response = hop
+			} else {
+				response = mergeGeminiContinuation(response, hop)
+			}
+			next := geminiContinuationToken(hop)
+			if next == "" || next == token {
+				return nil
+			}
+			token = next
+			body["continuationToken"] = token
 		}
-		if err := checkGeminiResponseFinishReasons(hop); err != nil {
-			return nil, d.formatError(err, options.Model, "execute")
-		}
-		if token == "" {
-			response = hop
-		} else {
-			response = mergeGeminiContinuation(response, hop)
-		}
-		next := geminiContinuationToken(hop)
-		if next == "" || next == token {
-			break
-		}
-		token = next
-		payload["continuationToken"] = token
+	})
+	if err != nil {
+		return nil, d.formatError(err, options.Model, "execute")
 	}
 	if len(response.Candidates) > 0 {
 		assignGeminiFunctionCallIDs(response.Candidates[0].Content.Parts, collectGeminiFunctionCallIDs(prompt.Contents))
 	}
 	completion := geminiResponseToCompletion(response, options)
+	completion.PromptCacheDiagnostic = diagnostic
 	completion.Conversation = finalizeGeminiConversation(appendGeminiResponseToConversation(prompt, response), options)
 	return completion, nil
 }
@@ -78,12 +89,22 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 	}
 	addGeminiServiceTierHeaders(headers, options.ModelOptions)
 	delete(payload, "model")
-	body, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
+	var body io.ReadCloser
+	diagnostic, err := d.sendWithGeminiContextCache(ctx, options, payload, d.geminiLocation(options.Model), func(sent map[string]any) error {
+		opened, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, sent)
+		if err != nil {
+			return err
+		}
+		// Continuation hops repeat the payload that was accepted.
+		payload, body = maps.Clone(sent), opened
+		return nil
+	})
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "stream")
 	}
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: geminiInput}
+	completion.PromptCacheDiagnostic = diagnostic
 	includeThoughts := geminiIncludeThoughts(options.ModelOptions)
 	// A functionCall part always arrives complete in one chunk, so each call gets
 	// its unique id on arrival and the shared stream keeps parallel calls to one

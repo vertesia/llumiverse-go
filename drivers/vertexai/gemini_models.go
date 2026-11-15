@@ -58,20 +58,30 @@ func splitVertexLocation(model string) (region string, rest string) {
 // API, which is the only version that returns long-decode continuation tokens,
 // in the location resolveGeminiRegion picks.
 func (d *VertexAIDriver) geminiEndpoint(model string, method string) (string, error) {
-	explicitRegion, name := splitVertexLocation(model)
-	region := resolveGeminiRegion(name, explicitRegion)
-	if region == "" {
-		region = d.options.Region
-	}
+	_, name := splitVertexLocation(model)
+	region := d.geminiLocation(model)
 	modelPath := name
 	if !strings.Contains(modelPath, "publishers/") {
 		modelPath = "publishers/google/models/" + shortResourceName(modelPath)
 	}
-	base := d.options.BaseURL
-	if base == "" {
-		base = strings.TrimSuffix(vertexDefaultBaseURL(region), "/v1") + "/v1beta1"
+	return joinEndpoint(d.geminiAPIBase(region), "projects", d.options.Project, "locations", region, modelPath+":"+method)
+}
+
+// geminiLocation returns the location a Gemini request for model goes to.
+func (d *VertexAIDriver) geminiLocation(model string) string {
+	explicitRegion, name := splitVertexLocation(model)
+	if region := resolveGeminiRegion(name, explicitRegion); region != "" {
+		return region
 	}
-	return joinEndpoint(base, "projects", d.options.Project, "locations", region, modelPath+":"+method)
+	return d.options.Region
+}
+
+// geminiAPIBase returns the v1beta1 base URL for a location, or BaseURL when set.
+func (d *VertexAIDriver) geminiAPIBase(region string) string {
+	if d.options.BaseURL != "" {
+		return d.options.BaseURL
+	}
+	return strings.TrimSuffix(vertexDefaultBaseURL(region), "/v1") + "/v1beta1"
 }
 
 // vertexGoogleListingExclusions are Google publisher models the driver does not
