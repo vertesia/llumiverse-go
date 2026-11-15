@@ -48,6 +48,7 @@ const (
 	ProviderAnthropic        = common.ProviderAnthropic
 	ProviderVertexAI         = common.ProviderVertexAI
 	ProviderBedrock          = common.ProviderBedrock
+	ProviderBedrockMantle    = common.ProviderBedrockMantle
 	ProviderAzureFoundry     = common.ProviderAzureFoundry
 	ProviderAzureOpenAI      = common.ProviderAzureOpenAI
 

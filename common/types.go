@@ -21,6 +21,7 @@ const (
 	ProviderAnthropic        Provider = "anthropic"
 	ProviderVertexAI         Provider = "vertexai"
 	ProviderBedrock          Provider = "bedrock"
+	ProviderBedrockMantle    Provider = "bedrock_mantle"
 	ProviderAzureFoundry     Provider = "azure_foundry"
 	ProviderAzureOpenAI      Provider = "azure_openai"
 )
