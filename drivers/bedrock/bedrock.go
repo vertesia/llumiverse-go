@@ -195,6 +195,10 @@ func (d *BedrockDriver) CreatePrompt(ctx context.Context, segments []PromptSegme
 	if isBedrockImageModel(options.Model) {
 		return formatBedrockImagePrompt(ctx, segments)
 	}
+	// Claude runs on the Messages API: see claude.go.
+	if prompt, handled, err := d.createClaudeMessagesPrompt(ctx, segments, options); handled {
+		return prompt, err
+	}
 	prompt := bedrockPrompt{}
 	var safety []brtypes.Message
 	for _, segment := range segments {
@@ -729,6 +733,10 @@ func (d *BedrockDriver) requestTextCompletion(ctx context.Context, prompt any, o
 	if isBedrockImageModel(options.Model) {
 		return d.requestBedrockImageGeneration(ctx, prompt.(bedrockImagePrompt), options)
 	}
+	// Claude on the Messages API: see claude.go.
+	if claudePrompt, ok := prompt.(bedrockClaudePrompt); ok {
+		return d.requestClaudeMessages(ctx, claudePrompt, options)
+	}
 	bp := prompt.(bedrockPrompt)
 	bp = bedrockConversationInput(options.Conversation, bp)
 	input, err := d.converseInput(bp, options, "execute")
@@ -753,6 +761,10 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 	}
 	if isBedrockImageModel(options.Model) {
 		return nil, errors.New("bedrock image models do not support streaming")
+	}
+	// Claude on the Messages API: see claude.go.
+	if claudePrompt, ok := prompt.(bedrockClaudePrompt); ok {
+		return d.requestClaudeMessagesStream(ctx, claudePrompt, options)
 	}
 	bp := prompt.(bedrockPrompt)
 	bp = bedrockConversationInput(options.Conversation, bp)

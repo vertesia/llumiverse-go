@@ -138,7 +138,8 @@ func (d *VertexAIDriver) CreatePrompt(ctx context.Context, segments []PromptSegm
 		return formatVertexImagenPrompt(ctx, segments, options)
 	}
 	if isClaudeModel(options.Model) {
-		return internalclaude.FormatPrompt(ctx, segments, options)
+		// Claude path in claude.go: the result schema stays out of the prompt when it is sent natively.
+		return d.createVertexClaudePrompt(ctx, segments, options)
 	}
 	return d.formatGeminiPrompt(ctx, segments, options)
 }
