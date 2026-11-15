@@ -100,3 +100,25 @@ func TestOpenAIResponsesSchemaInPromptWithoutNativeSupport(t *testing.T) {
 		t.Fatalf("body = %#v", body)
 	}
 }
+
+// Mirrors the TS prompt_cache_schema_suffix test: the schema goes in a final user
+// message and the native format becomes json_object, so the cached prefix does
+// not depend on the schema.
+func TestOpenAIResponsesSchemaSuffixKeepsPromptCache(t *testing.T) {
+	t.Parallel()
+
+	schema := map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}
+	body, _, err := executeResponses(t, ExecutionOptions{ResultSchema: schema, PromptCacheSchemaSuffix: true, ModelOptions: map[string]any{"verbosity": "low"}}, okResponse,
+		PromptSegment{Role: PromptRoleSystem, Content: "Be brief"}, PromptSegment{Role: PromptRoleUser, Content: "Hi"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, _ := body["input"].([]any)
+	last := marshalNoEscape(input[len(input)-1])
+	if !strings.Contains(last, `"role":"user"`) || !strings.Contains(last, "<response_schema>") {
+		t.Fatalf("last input = %s", last)
+	}
+	if got := marshalNoEscape(body["text"]); got != `{"format":{"type":"json_object"},"verbosity":"low"}` {
+		t.Fatalf("text = %s", got)
+	}
+}

@@ -75,9 +75,16 @@ func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segm
 			others = append(others, responseMessage("user", parts))
 		}
 	}
-	if options.ResultSchema != nil && !d.supportsSchema(options.Model) {
-		// Without native structured output, the schema goes into the instructions.
-		system = append(system, responseMessage(systemRole, []responseItem{{"type": "input_text", "text": openAISchemaInstruction(options.ResultSchema)}}))
+	if options.ResultSchema != nil {
+		schemaPart := []responseItem{{"type": "input_text", "text": openAISchemaInstruction(options.ResultSchema)}}
+		switch {
+		case options.PromptCacheSchemaSuffix:
+			// After the cached prefix, so changing the schema keeps the prompt cache.
+			others = append(others, responseMessage("user", schemaPart))
+		case !d.supportsSchema(options.Model):
+			// Without native structured output, the schema goes into the instructions.
+			system = append(system, responseMessage(systemRole, schemaPart))
+		}
 	}
 	prompt.Items = append(prompt.Items, system...)
 	prompt.Items = append(prompt.Items, others...)
@@ -250,16 +257,36 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 	if len(options.Tools) > 0 && !isLikelyNonToolOpenAIModel(options.Model) {
 		payload["tools"] = openAIResponseTools(options.Tools)
 	}
-	if options.ResultSchema != nil && d.supportsSchema(options.Model) {
+	if text := d.openAIResponseTextConfig(options); text != nil {
+		payload["text"] = text
+	}
+	return payload
+}
+
+// openAIResponseTextConfig builds the text config: a json_schema format for
+// native structured output (strict when convertible), json_object when the
+// schema travels as a prompt suffix, and the verbosity option.
+func (d *OpenAICompatibleDriver) openAIResponseTextConfig(options ExecutionOptions) map[string]any {
+	text := map[string]any{}
+	switch {
+	case options.ResultSchema != nil && options.PromptCacheSchemaSuffix:
+		text["format"] = map[string]any{"type": "json_object"}
+	case options.ResultSchema != nil && d.supportsSchema(options.Model):
 		schema, strict := openAISchemaForResponses(options.ResultSchema)
-		payload["text"] = map[string]any{"format": map[string]any{
+		text["format"] = map[string]any{
 			"type":   "json_schema",
 			"name":   "format_output",
 			"schema": schema,
 			"strict": strict,
-		}}
+		}
 	}
-	return payload
+	if verbosity := optionString(options.ModelOptions, "verbosity"); verbosity != "" {
+		text["verbosity"] = verbosity
+	}
+	if len(text) == 0 {
+		return nil
+	}
+	return text
 }
 
 // openAIResponseTools converts ToolDefinitions into Responses function tools,
