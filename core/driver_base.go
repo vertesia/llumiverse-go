@@ -31,7 +31,7 @@ func executeWithPrompt(ctx context.Context, driver Driver, segments []PromptSegm
 	start := time.Now()
 	prompt, err := driver.CreatePrompt(ctx, segments, options)
 	if err != nil {
-		return nil, err
+		return nil, createPromptError(ctx, driver, options, "execute", err)
 	}
 	completion, err := fn(ctx, prompt, options)
 	if err != nil {
@@ -69,7 +69,7 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 	}
 	prompt, err := driver.CreatePrompt(ctx, segments, options)
 	if err != nil {
-		return nil, err
+		return nil, createPromptError(ctx, driver, options, "stream", err)
 	}
 	stream, err := fn(ctx, prompt, options)
 	if err != nil {
@@ -97,6 +97,19 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 		completion.Prompt = debugPrompt(driver, completion.Prompt)
 	}
 	return stream, nil
+}
+
+// createPromptError normalizes a failure to build the prompt like a failed request, the TS
+// client's createExecutionPrompt: a model that rejects the request while it is built (an
+// unsupported option, a missing input) reports a classified LlumiverseError instead of a bare
+// error callers can only treat as unknown. An error the driver already classified, and the
+// caller's own cancellation, are returned unchanged.
+func createPromptError(ctx context.Context, driver Driver, options ExecutionOptions, operation string, err error) error {
+	var llumiErr *LlumiverseError
+	if ctx.Err() != nil || errors.As(err, &llumiErr) {
+		return err
+	}
+	return formatGenericError(err, LlumiverseErrorContext{Provider: driver.Provider(), Model: options.Model, Operation: operation})
 }
 
 // formatGenericError wraps a provider error in a LlumiverseError, attaching the
