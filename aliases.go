@@ -6,6 +6,7 @@ import (
 	"github.com/vertesia/llumiverse-go/common"
 	"github.com/vertesia/llumiverse-go/core"
 	anthropicdriver "github.com/vertesia/llumiverse-go/drivers/anthropic"
+	azuredriver "github.com/vertesia/llumiverse-go/drivers/azurefoundry"
 	bedrockdriver "github.com/vertesia/llumiverse-go/drivers/bedrock"
 	openaidriver "github.com/vertesia/llumiverse-go/drivers/openai"
 	vertexdriver "github.com/vertesia/llumiverse-go/drivers/vertexai"
@@ -76,6 +77,11 @@ type BedrockModelAPI = bedrockdriver.ModelAPI
 type BedrockConverseStream = bedrockdriver.ConverseStream
 type VertexAIOptions = vertexdriver.VertexAIOptions
 type VertexAIDriver = vertexdriver.VertexAIDriver
+type AzureFoundryOptions = azuredriver.AzureFoundryOptions
+type AzureFoundryDriver = azuredriver.AzureFoundryDriver
+type AzureOpenAIOptions = azuredriver.AzureOpenAIOptions
+type AzureOpenAIDriver = azuredriver.AzureOpenAIDriver
+type AzureTokenProvider = azuredriver.TokenProvider
 
 const (
 	ProviderOpenAI           = common.ProviderOpenAI
@@ -83,6 +89,8 @@ const (
 	ProviderAnthropic        = common.ProviderAnthropic
 	ProviderVertexAI         = common.ProviderVertexAI
 	ProviderBedrock          = common.ProviderBedrock
+	ProviderAzureFoundry     = common.ProviderAzureFoundry
+	ProviderAzureOpenAI      = common.ProviderAzureOpenAI
 
 	PromptRoleSafety    = common.PromptRoleSafety
 	PromptRoleSystem    = common.PromptRoleSystem
@@ -160,6 +168,16 @@ func NewBedrockDriverWithClient(options BedrockOptions, runtime BedrockRuntimeAP
 // NewVertexAIDriver creates a Gemini Enterprise Agent Platform driver.
 func NewVertexAIDriver(options VertexAIOptions) (*VertexAIDriver, error) {
 	return vertexdriver.NewVertexAIDriver(options)
+}
+
+// NewAzureFoundryDriver creates a Microsoft Foundry driver.
+func NewAzureFoundryDriver(options AzureFoundryOptions) (*AzureFoundryDriver, error) {
+	return azuredriver.NewAzureFoundryDriver(options)
+}
+
+// NewAzureOpenAIDriver creates an Azure OpenAI driver on the v1 API.
+func NewAzureOpenAIDriver(options AzureOpenAIOptions) (*AzureOpenAIDriver, error) {
+	return azuredriver.NewAzureOpenAIDriver(options)
 }
 
 // BoolPtr returns a pointer to v for option fields that distinguish false from unset.
