@@ -129,6 +129,27 @@ func TestClaudeModelVersionHelpers(t *testing.T) {
 	if ClaudeHasSamplingParameterRestriction("not-claude") {
 		t.Fatal("unparseable model should not have sampling restriction")
 	}
+
+	// Mirrors the TS client's parseClaudeVersion cases.
+	for model, want := range map[string]ClaudeVersion{
+		"claude-opus-4-7":                         {Major: 4, Minor: 7, Variant: "opus"},
+		"claude-3-7-sonnet-20250219":              {Major: 3, Minor: 7, Variant: "sonnet"},
+		"anthropic/claude-opus-4.6":               {Major: 4, Minor: 6, Variant: "opus"},
+		"claude-sonnet-4-5@20250929":              {Major: 4, Minor: 5, Variant: "sonnet"},
+		"claude-sonnet-4-20250514":                {Major: 4, Minor: 0, Variant: "sonnet"},
+		"us.anthropic.claude-fable-5-2-v1:0":      {Major: 5, Minor: 2, Variant: "fable"},
+		"claude-mythos-5-1":                       {Major: 5, Minor: 1, Variant: "mythos"},
+		"claude-mythos-preview":                   {Major: 5, Minor: 0, Variant: "mythos"},
+		"global.anthropic.claude-haiku-5-5-v1:0":  {Major: 5, Minor: 5, Variant: "haiku"},
+		"projects/p/models/claude-opus-4-8@00001": {Major: 4, Minor: 8, Variant: "opus"},
+	} {
+		if got, ok := ParseClaudeVersion(model); !ok || got != want {
+			t.Fatalf("ParseClaudeVersion(%q) = %#v, %v; want %#v", model, got, ok, want)
+		}
+	}
+	if _, ok := ParseClaudeVersion("gpt-5"); ok {
+		t.Fatal("a non-Claude model parsed")
+	}
 }
 
 func TestRetryableAndGenericErrorHelpers(t *testing.T) {
