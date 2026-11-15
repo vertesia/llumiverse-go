@@ -94,12 +94,12 @@ A commit that spans several areas appears in each area's table with that area's 
 | `cf780e4` | 2026-09-28 | feat: report one-hour cache writes and provider-reported cost in token usage (#697) | port |  |
 | `4448f13` | 2026-09-29 | [Backport main] feat: support Sonnet 5.5 between-tools thinking (#713) | port |  |
 | `1d2a91e` | 2026-10-08 | [Backport main] fix: honor Haiku 5.5 default thinking and effort (#753) | port |  |
-| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | port |  |
+| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | covered | The Foundry part is logger plumbing and the options catalogue; the Go Chat Completions payload sends only caller-set options. |
 | `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | port |  |
-| `1eed259` | 2026-10-14 | [Backport main] fix(claude): drop thinking blocks whose conversation prefix changed (#778) | port |  |
+| `1eed259` | 2026-10-14 | [Backport main] fix(claude): drop thinking blocks whose conversation prefix changed (#778) | covered | Thinking-block handling lives in the shared Claude payload (drivers/internal/claude, Claude area), which the Foundry Messages path calls. |
 | `657ff94` | 2026-10-14 | feat(claude): append-only tool changes, Bedrock Claude on the Messages API (#779) | port |  |
 | `70c413c` | 2026-10-22 | fix(drivers): refuse a non-array conversation in OpenAI and Gemini as a 400 (#810) | port |  |
-| `84bf7ed` | 2026-10-29 | chore(deps): update model provider client libraries to v1 (main) (major) (#837) | port | SDK major bump; port the Claude API version change. |
+| `84bf7ed` | 2026-10-29 | chore(deps): update model provider client libraries to v1 (main) (major) (#837) | ported | Foundry Claude requests pin `anthropic-version: 2023-06-01`; the SDK bump itself has no Go counterpart. |
 | `77a9744` | 2026-10-29 | fix: report the provider's stop when it cuts a response off mid tool call (#835) | port |  |
 | `b9c8505` | 2026-11-10 | feat(bedrock): use native structured outputs for Claude 4.5+ (#867) | port |  |
 | `d53f9c0` | 2026-11-10 | feat(claude): support Claude Fable 5.2 fast mode and Mythos thinking binding (#873) | port |  |
@@ -142,16 +142,16 @@ A commit that spans several areas appears in each area's table with that area's 
 | `1d8ded7` | 2026-09-23 | [Backport main] fix: remove cross-model temperature defaults (#687) | port | Option metadata defaults; check no driver sends a default temperature. |
 | `8e6e227` | 2026-09-24 | [Backport main] feat: update current OpenAI and Claude model support (#695) | port |  |
 | `cf780e4` | 2026-09-28 | feat: report one-hour cache writes and provider-reported cost in token usage (#697) | port |  |
-| `adf8f86` | 2026-10-01 | [Backport main] feat: support OpenAI image generation and editing (#725) | port |  |
+| `adf8f86` | 2026-10-01 | [Backport main] feat: support OpenAI image generation and editing (#725) | ported | Image deployments (by source model, discovered or configured) go to the Images API of the resource endpoint through drivers/openai, with the deployment as model. Image editing and partial-image streaming follow drivers/openai (OpenAI area), which generates only; Foundry streams image results as one chunk. |
 | `45e0cda` | 2026-10-09 | [Backport main] fix: complete Bedrock GPT reasoning options and metadata (#759) | port |  |
-| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | port |  |
+| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | covered | The Foundry part is logger plumbing and the options catalogue; the Go Chat Completions payload sends only caller-set options. |
 | `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | port |  |
 | `71d2a55` | 2026-10-15 | [Backport main] fix: model maintenance for Gemini 4, Claude 5.5, DeepSeek V4.1 Flash, GLM 5.3 and Bedrock listings (#787) | port |  |
 | `2c7fc5f` | 2026-10-15 | [Backport main] fix: MiniMax structured output and Gemini explicit-cache bugs (#790) | port |  |
 | `70c413c` | 2026-10-22 | fix(drivers): refuse a non-array conversation in OpenAI and Gemini as a 400 (#810) | port |  |
 | `c51e8ba` | 2026-10-29 | [Backport main] fix(openai): harden GPT-6 and GPT-6.1 support (#840) | port |  |
 | `77a9744` | 2026-10-29 | fix: report the provider's stop when it cuts a response off mid tool call (#835) | port |  |
-| `97f7380` | 2026-11-06 | feat: support GPT Image 2.6 options and GIF/SVG output (#860) | port |  |
+| `97f7380` | 2026-11-06 | feat: support GPT Image 2.6 options and GIF/SVG output (#860) | covered | GPT Image options and output formats are built by drivers/openai (OpenAI area); Foundry and Azure OpenAI image requests delegate to it. |
 | `080f6a1` | 2026-11-10 | feat(openai): add a per-model prompt-cache lifetime option (#866) | port |  |
 | `939bbd3` | 2026-11-12 | fix(openai): keep function call arguments sent without deltas (#884) | port |  |
 | `9b49f2e` | 2026-11-13 | feat: server-side conversation compaction for Claude and OpenAI Responses (#890) | port |  |
@@ -186,7 +186,7 @@ A commit that spans several areas appears in each area's table with that area's 
 | `c01c096` | 2026-10-08 | fix(bedrock): never replay an empty assistant turn (#747) | port |  |
 | `45e0cda` | 2026-10-09 | [Backport main] fix: complete Bedrock GPT reasoning options and metadata (#759) | port |  |
 | `fa54a95` | 2026-10-10 | fix(bedrock): resolve regionless streaming discovery references (#761) | port |  |
-| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | port |  |
+| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | covered | The Foundry part is logger plumbing and the options catalogue; the Go Chat Completions payload sends only caller-set options. |
 | `f7a78a3` | 2026-10-13 | [Backport main] fix(bedrock): surface the provider error when foundation models cannot be listed (#768) | port |  |
 | `7187f56` | 2026-10-13 | [Backport main] fix: keep unknown schema formats and the Bedrock canStream check off stderr (#771) | port |  |
 | `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | port |  |
@@ -240,7 +240,7 @@ A commit that spans several areas appears in each area's table with that area's 
 | `f157a07` | 2026-10-05 | fix: preserve generated-image metadata and reject empty output (#735) | port |  |
 | `98f733a` | 2026-10-07 | [Backport main] fix(vertexai): support Nano Banana IDs and exclude Live models (#745) | port |  |
 | `124d400` | 2026-10-08 | fix: cap inline Gemini media at 100 MB and quiet AJV unknown formats (#750) | port | AJV unknown-format part skip (no Go validation). |
-| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | port |  |
+| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | covered | The Foundry part is logger plumbing and the options catalogue; the Go Chat Completions payload sends only caller-set options. |
 | `e449750` | 2026-10-13 | [Backport main] fix: cap total inline Gemini media per request, log result validation failures at info (#769) | port |  |
 | `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | port |  |
 | `71d2a55` | 2026-10-15 | [Backport main] fix: model maintenance for Gemini 4, Claude 5.5, DeepSeek V4.1 Flash, GLM 5.3 and Bedrock listings (#787) | port |  |
@@ -260,14 +260,14 @@ New `drivers/azurefoundry` driver.
 
 | Commit | Date | Subject | Decision | Reason |
 | --- | --- | --- | --- | --- |
-| `adf8f86` | 2026-10-01 | [Backport main] feat: support OpenAI image generation and editing (#725) | port |  |
-| `59221b6` | 2026-10-02 | [Backport main] feat: support Anthropic Messages on Microsoft Foundry (#733) | port |  |
-| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | port |  |
-| `1eed259` | 2026-10-14 | [Backport main] fix(claude): drop thinking blocks whose conversation prefix changed (#778) | port |  |
-| `9da2fdc` | 2026-10-28 | feat(azure): request the Entra scope of the endpoint's cloud (#831) | port |  |
-| `84bf7ed` | 2026-10-29 | chore(deps): update model provider client libraries to v1 (main) (major) (#837) | port | SDK major bump; port the Claude API version change. |
-| `97f7380` | 2026-11-06 | feat: support GPT Image 2.6 options and GIF/SVG output (#860) | port |  |
-| `80e7b80` | 2026-11-13 | feat(azure): bring the Microsoft Foundry and Azure OpenAI drivers up to date (#896) | port |  |
+| `adf8f86` | 2026-10-01 | [Backport main] feat: support OpenAI image generation and editing (#725) | ported | Image deployments (by source model, discovered or configured) go to the Images API of the resource endpoint through drivers/openai, with the deployment as model. Image editing and partial-image streaming follow drivers/openai (OpenAI area), which generates only; Foundry streams image results as one chunk. |
+| `59221b6` | 2026-10-02 | [Backport main] feat: support Anthropic Messages on Microsoft Foundry (#733) | ported | Claude deployments use `<resource>/anthropic/v1/messages` through the drivers/internal/claude facade: deployment as request model, source model for Claude options, `x-api-key` or Entra bearer. |
+| `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | covered | The Foundry part is logger plumbing and the options catalogue; the Go Chat Completions payload sends only caller-set options. |
+| `1eed259` | 2026-10-14 | [Backport main] fix(claude): drop thinking blocks whose conversation prefix changed (#778) | covered | Thinking-block handling lives in the shared Claude payload (drivers/internal/claude, Claude area), which the Foundry Messages path calls. |
+| `9da2fdc` | 2026-10-28 | feat(azure): request the Entra scope of the endpoint's cloud (#831) | ported | `FoundryScope` / `CognitiveServicesScope`: `ai.azure.us` / `cognitiveservices.azure.us` for `*.azure.us` endpoints, else the public cloud; the TokenProvider receives it. |
+| `84bf7ed` | 2026-10-29 | chore(deps): update model provider client libraries to v1 (main) (major) (#837) | ported | Foundry Claude requests pin `anthropic-version: 2023-06-01`; the SDK bump itself has no Go counterpart. |
+| `97f7380` | 2026-11-06 | feat: support GPT Image 2.6 options and GIF/SVG output (#860) | covered | GPT Image options and output formats are built by drivers/openai (OpenAI area); Foundry and Azure OpenAI image requests delegate to it. |
+| `80e7b80` | 2026-11-13 | feat(azure): bring the Microsoft Foundry and Azure OpenAI drivers up to date (#896) | ported | API-key auth on the resource endpoint, no redirects with keys, routing of bare names by source model, listing filter, `AzureOpenAIDriver` on the v1 API with the deployment-scoped model. Skipped: the legacy dated `api-version` Azure OpenAI API and the image_generation tool header. |
 
 ## Skipped and covered outside the areas
 
