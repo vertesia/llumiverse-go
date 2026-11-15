@@ -172,7 +172,10 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 			if err := json.Unmarshal([]byte(event.Data), &decoded); err != nil {
 				return err
 			}
-			out := state.chunk(decoded)
+			out, err := state.chunk(decoded)
+			if err != nil {
+				return err
+			}
 			if len(out.Result) > 0 || len(out.ToolUse) > 0 || out.FinishReason != "" || out.TokenUsage != nil {
 				select {
 				case ch <- streamItem{Chunk: out}:
@@ -466,13 +469,16 @@ type openAIResponsesStreamTool struct {
 // openAIResponsesStreamState accumulates per-stream tool metadata, keyed by both
 // item ID and call ID, so argument-delta events resolve to the right tool call.
 type openAIResponsesStreamState struct {
-	tools map[string]openAIResponsesStreamTool
+	tools         map[string]openAIResponsesStreamTool
+	hasTextDeltas bool
+	refusal       string
 }
 
 // chunk advances the streaming state machine for one Responses event, emitting a
 // CompletionChunk for tool-call starts, argument deltas, text deltas, and the
 // terminal completed/incomplete/failed events (which carry finish reason and usage).
-func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) CompletionChunk {
+// A refusal or an error event ends the stream with an error.
+func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (CompletionChunk, error) {
 	switch event.Type {
 	case "response.output_item.added":
 		if event.Item != nil && event.Item.Type == "function_call" {
@@ -490,7 +496,7 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) Completio
 			if event.Item.CallID != "" {
 				s.tools[event.Item.CallID] = meta
 			}
-			return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: event.Item.Name, ToolInput: ""}}}
+			return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: event.Item.Name, ToolInput: ""}}}, nil
 		}
 	case "response.function_call_arguments.delta":
 		meta := s.tools[event.ItemID]
@@ -501,19 +507,41 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) Completio
 		if id == "" {
 			id = fmt.Sprintf("tool_%d", event.OutputIndex)
 		}
-		return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: meta.name, ToolInput: event.Delta}}}
+		return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: meta.name, ToolInput: event.Delta}}}, nil
 	case "response.output_text.delta":
+		s.hasTextDeltas = true
 		if event.Delta != "" {
-			return CompletionChunk{Result: []CompletionResult{newTextResult(event.Delta)}}
+			return CompletionChunk{Result: []CompletionResult{newTextResult(event.Delta)}}, nil
 		}
+	case "response.output_text.done":
+		// Some models (for example gpt-5 with json_schema structured output) buffer
+		// the whole output and send only the done event. Emit it only when no delta
+		// arrived, so the text is not duplicated.
+		if !s.hasTextDeltas && event.Text != "" {
+			return CompletionChunk{Result: []CompletionResult{newTextResult(event.Text)}}, nil
+		}
+	case "response.refusal.delta":
+		s.refusal += event.Delta
+	case "response.refusal.done":
+		refusal := event.Refusal
+		if refusal == "" {
+			refusal = s.refusal
+		}
+		return CompletionChunk{}, fmt.Errorf("[OpenAI] Model refused: %s", refusal)
+	case "response.error":
+		message := "[OpenAI Responses API] " + event.Message
+		if event.Code != "" {
+			message += " (" + event.Code + ")"
+		}
+		return CompletionChunk{}, errors.New(message)
 	case "response.completed", "response.incomplete", "response.failed":
 		if event.Response == nil {
-			return CompletionChunk{}
+			return CompletionChunk{}, nil
 		}
 		tools := openAIResponseToolUses(event.Response.Output)
-		return CompletionChunk{FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0), TokenUsage: openAIResponseUsage(event.Response.Usage)}
+		return CompletionChunk{FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0), TokenUsage: openAIResponseUsage(event.Response.Usage)}, nil
 	}
-	return CompletionChunk{}
+	return CompletionChunk{}, nil
 }
 
 // openAIResponsesSystemRole picks the role used for system/safety instructions:

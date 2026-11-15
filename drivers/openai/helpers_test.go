@@ -442,7 +442,7 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 	t.Parallel()
 
 	state := openAIResponsesStreamState{tools: map[string]openAIResponsesStreamTool{}}
-	start := state.chunk(openAIStreamEvent(t, `{
+	start, _ := state.chunk(openAIStreamEvent(t, `{
 		"type":"response.output_item.added",
 		"output_index":0,
 		"item":{"id":"item_1","type":"function_call","call_id":"call_1","name":"lookup","arguments":""}
@@ -450,7 +450,7 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 	if len(start.ToolUse) != 1 || start.ToolUse[0].ID != "call_1" || start.ToolUse[0].ToolName != "lookup" {
 		t.Fatalf("start = %#v", start)
 	}
-	delta := state.chunk(openAIStreamEvent(t, `{
+	delta, _ := state.chunk(openAIStreamEvent(t, `{
 		"type":"response.function_call_arguments.delta",
 		"item_id":"item_1",
 		"output_index":0,
@@ -459,11 +459,11 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 	if len(delta.ToolUse) != 1 || delta.ToolUse[0].ID != "call_1" || delta.ToolUse[0].ToolInput != `{"q"` {
 		t.Fatalf("delta = %#v", delta)
 	}
-	text := state.chunk(openAIStreamEvent(t, `{"type":"response.output_text.delta","delta":"hello"}`))
+	text, _ := state.chunk(openAIStreamEvent(t, `{"type":"response.output_text.delta","delta":"hello"}`))
 	if len(text.Result) != 1 || text.Result[0].Type() != ResultTypeText || text.Result[0].String() != "hello" {
 		t.Fatalf("text = %#v", text)
 	}
-	completed := state.chunk(openAIStreamEvent(t, `{
+	completed, _ := state.chunk(openAIStreamEvent(t, `{
 		"type":"response.completed",
 		"response":{
 			"id":"resp_1",
@@ -478,7 +478,7 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 	if completed.FinishReason != "tool_use" || completed.TokenUsage == nil || count(completed.TokenUsage.Total) != 5 {
 		t.Fatalf("completed = %#v", completed)
 	}
-	incomplete := state.chunk(openAIStreamEvent(t, `{
+	incomplete, _ := state.chunk(openAIStreamEvent(t, `{
 		"type":"response.incomplete",
 		"response":{
 			"id":"resp_2",
@@ -494,14 +494,14 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 	if incomplete.FinishReason != "length" {
 		t.Fatalf("incomplete = %#v", incomplete)
 	}
-	failed := state.chunk(openAIStreamEvent(t, `{
+	failed, _ := state.chunk(openAIStreamEvent(t, `{
 		"type":"response.failed",
 		"response":{"id":"resp_3","object":"response","created_at":1,"status":"failed","model":"gpt-4.1","output":[]}
 	}`))
 	if failed.FinishReason != "failed" {
 		t.Fatalf("failed = %#v", failed)
 	}
-	if empty := state.chunk(responsesStreamEvent{Type: "response.output_text.delta"}); len(empty.Result) != 0 {
+	if empty, _ := state.chunk(responsesStreamEvent{Type: "response.output_text.delta"}); len(empty.Result) != 0 {
 		t.Fatalf("empty = %#v", empty)
 	}
 }
