@@ -65,6 +65,9 @@ type EmbeddingBatchAdapter = core.EmbeddingBatchAdapter
 
 type OpenAICompatibleOptions = openaidriver.OpenAICompatibleOptions
 type OpenAICompatibleDriver = openaidriver.OpenAICompatibleDriver
+type OpenAIChatCompletionsOptions = openaidriver.OpenAIChatCompletionsOptions
+type OpenAIChatCompletionsDriver = openaidriver.OpenAIChatCompletionsDriver
+type ChatCompletionsProtocolOptions = openaidriver.ChatCompletionsProtocolOptions
 type AnthropicOptions = anthropicdriver.AnthropicOptions
 type AnthropicDriver = anthropicdriver.AnthropicDriver
 type BedrockOptions = bedrockdriver.BedrockOptions
@@ -140,6 +143,11 @@ func NewOpenAIDriver(options OpenAICompatibleOptions) (*OpenAICompatibleDriver, 
 // NewOpenAICompatibleDriver creates a driver for OpenAI-compatible endpoints.
 func NewOpenAICompatibleDriver(options OpenAICompatibleOptions) (*OpenAICompatibleDriver, error) {
 	return openaidriver.NewOpenAICompatibleDriver(options)
+}
+
+// NewOpenAIChatCompletionsDriver creates a driver for OpenAI-compatible Chat Completions endpoints.
+func NewOpenAIChatCompletionsDriver(options OpenAIChatCompletionsOptions) (*OpenAIChatCompletionsDriver, error) {
+	return openaidriver.NewOpenAIChatCompletionsDriver(options)
 }
 
 // NewAnthropicDriver creates the direct Anthropic Claude driver.

@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/vertesia/llumiverse-go/core"
 )
 
 const defaultOpenAIBaseURL = "https://api.openai.com/v1"
@@ -89,12 +91,22 @@ func (d *OpenAICompatibleDriver) CreatePrompt(ctx context.Context, segments []Pr
 
 // Execute runs a single non-streaming completion.
 func (d *OpenAICompatibleDriver) Execute(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (*ExecutionResponse, error) {
+	if d.isOpenAIAudioModel(options.Model) {
+		return d.executeOpenAIAudio(ctx, segments, options)
+	}
 	return executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
 }
 
 // Stream runs a streaming completion, emitting chunks as they arrive.
 func (d *OpenAICompatibleDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	return streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	if d.isOpenAIAudioModel(options.Model) {
+		return d.openAIAudioStream(ctx, segments, options)
+	}
+	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	if err != nil {
+		return nil, err
+	}
+	return core.LeaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // requestTextCompletion issues a Responses API request.
@@ -129,6 +141,10 @@ func openAIUsage(prompt, completion, total, cached int64) *ExecutionTokenUsage {
 	}
 }
 
+// openAIUnsupportedEndpointPattern matches the model families served by
+// dedicated or legacy endpoints rather than text generation.
+var openAIUnsupportedEndpointPattern = regexp.MustCompile(`(?:^|[-_.:/])(?:embed|embeddings?|whisper|transcribe|audio|moderation|tts|realtime|babbage|davinci|computer[-_.:]use|sora)(?:[-_.:/]|$)`)
+
 // ListModels returns the endpoint's available models sorted by ID, marking
 // likely non-tool models as lacking tool support and normalizing the "system"
 // owner to "openai" for first-party OpenAI.
@@ -139,6 +155,12 @@ func (d *OpenAICompatibleDriver) ListModels(ctx context.Context, _ *ModelSearchP
 	}
 	models := make([]AIModel, 0, len(response.Data))
 	for _, model := range response.Data {
+		// Listing metadata does not describe execution capabilities, so only
+		// the dedicated and legacy endpoint families are left out on OpenAI;
+		// unknown future ids stay visible.
+		if d.Provider() == ProviderOpenAI && openAIUnsupportedEndpointPattern.MatchString(strings.ToLower(model.ID)) {
+			continue
+		}
 		owner := model.OwnedBy
 		if owner == "system" && d.Provider() == ProviderOpenAI {
 			owner = "openai"

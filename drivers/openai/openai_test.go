@@ -5,9 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
-
-	"github.com/openai/openai-go/responses"
 )
 
 func TestOpenAICompatibleExecuteUsesResponsesAPI(t *testing.T) {
@@ -114,6 +113,33 @@ func TestOpenAICompatibleListModels(t *testing.T) {
 	}
 	if len(models) != 2 || models[0].ID != "a" || models[1].ID != "b" {
 		t.Fatalf("models not sorted: %#v", models)
+	}
+}
+
+// Mirrors the TS model listing test: on OpenAI, dedicated and legacy endpoint
+// families are left out, and unknown ids stay visible.
+func TestOpenAIListModelsLeavesOutDedicatedEndpoints(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6"},{"id":"text-embedding-3-small"},{"id":"whisper-1"},{"id":"gpt-realtime"},{"id":"computer-use-preview"},{"id":"davinci-002"},{"id":"gpt-7-future"},{"id":"gpt-5.1-codex"}]}`))
+	}))
+	defer server.Close()
+	driver, err := NewOpenAIDriver(OpenAICompatibleOptions{APIKey: "k", Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := driver.ListModels(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	if got := strings.Join(ids, ","); got != "gpt-5.1-codex,gpt-5.6,gpt-7-future" {
+		t.Fatalf("models = %s", got)
 	}
 }
 
@@ -280,7 +306,7 @@ func TestOpenAIResponsesConversationToolItemsBecomeTextWithoutTools(t *testing.T
 			t.Fatal(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4.1","output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4.1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
 	}))
 	defer server.Close()
 
@@ -290,9 +316,9 @@ func TestOpenAIResponsesConversationToolItemsBecomeTextWithoutTools(t *testing.T
 	}
 	_, err = driver.Execute(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "summarize"}}, ExecutionOptions{
 		Model: "gpt-4.1",
-		Conversation: responses.ResponseInputParam{
-			responses.ResponseInputItemParamOfFunctionCall(`{"q":"tokyo"}`, "call_1", "lookup"),
-			responses.ResponseInputItemParamOfFunctionCallOutput("call_1", `{"ok":true}`),
+		Conversation: []any{
+			map[string]any{"type": "function_call", "arguments": `{"q":"tokyo"}`, "call_id": "call_1", "name": "lookup"},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": `{"ok":true}`},
 		},
 	})
 	if err != nil {
@@ -353,32 +379,28 @@ func TestOpenAIImageGeneration(t *testing.T) {
 	if got["background"] != "transparent" || got["output_format"] != "webp" || got["output_compression"] != float64(80) || got["moderation"] != "low" {
 		t.Fatalf("image options = %#v", got)
 	}
-	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeImage || resp.Result[0].String() != "data:image/png;base64,aW1hZ2U=" {
+	if len(resp.Result) != 1 || resp.Result[0].Type() != ResultTypeImage || resp.Result[0].String() != "data:image/webp;base64,aW1hZ2U=" {
 		t.Fatalf("result = %#v", resp.Result)
 	}
 }
 
-func openAIResponseInputTexts(items responses.ResponseInputParam) []string {
+func openAIResponseInputTexts(items []responseItem) []string {
 	var out []string
 	for _, item := range items {
-		switch {
-		case item.OfMessage != nil:
-			if item.OfMessage.Content.OfString.Valid() {
-				out = append(out, item.OfMessage.Content.OfString.Value)
-			}
-			for _, part := range item.OfMessage.Content.OfInputItemContentList {
-				if part.OfInputText != nil {
-					out = append(out, part.OfInputText.Text)
+		switch itemType(item) {
+		case "message":
+			switch content := item["content"].(type) {
+			case string:
+				out = append(out, content)
+			case []any:
+				for _, raw := range content {
+					if part, ok := raw.(map[string]any); ok && (part["type"] == "input_text" || part["type"] == "output_text") {
+						out = append(out, stringValue(part["text"]))
+					}
 				}
 			}
-		case item.OfInputMessage != nil:
-			for _, part := range item.OfInputMessage.Content {
-				if part.OfInputText != nil {
-					out = append(out, part.OfInputText.Text)
-				}
-			}
-		case item.OfFunctionCallOutput != nil:
-			out = append(out, item.OfFunctionCallOutput.Output)
+		case "function_call_output":
+			out = append(out, functionCallOutputText(item["output"]))
 		}
 	}
 	return out

@@ -32,6 +32,7 @@ type EmbeddingOutput = common.EmbeddingOutput
 type EmbeddingsTokenUsage = common.EmbeddingsTokenUsage
 type AIModel = common.AIModel
 type ModelSearchPayload = common.ModelSearchPayload
+type LlumiverseError = common.LlumiverseError
 type LlumiverseErrorContext = common.LlumiverseErrorContext
 type streamItem = core.StreamItem
 
@@ -47,9 +48,10 @@ const (
 	PromptRoleMask      = common.PromptRoleMask
 	PromptRoleTool      = common.PromptRoleTool
 
-	ResultTypeText  = common.ResultTypeText
-	ResultTypeJSON  = common.ResultTypeJSON
-	ResultTypeImage = common.ResultTypeImage
+	ResultTypeText     = common.ResultTypeText
+	ResultTypeJSON     = common.ResultTypeJSON
+	ResultTypeImage    = common.ResultTypeImage
+	ResultTypeThoughts = common.ResultTypeThoughts
 
 	embeddingInputText = core.EmbeddingInputText
 
@@ -74,6 +76,7 @@ var (
 	shortResourceName                 = core.ShortResourceName
 	newTextResult                     = core.NewTextResult
 	newImageResult                    = core.NewImageResult
+	newThoughtsResult                 = common.NewThoughtsResult
 	toolInputObject                   = core.ToolInputObject
 	tokens                            = core.Tokens
 	count                             = core.Count
