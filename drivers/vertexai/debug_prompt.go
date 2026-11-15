@@ -3,12 +3,14 @@ package vertexai
 import (
 	"github.com/vertesia/llumiverse-go/core"
 	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
+	openaidriver "github.com/vertesia/llumiverse-go/drivers/openai"
 )
 
 // FormatDebugPrompt returns the prompt to report as ExecutionResponse.Prompt:
-// Gemini, Imagen and Claude prompts with their inline base64 media truncated, as
-// the TS client's formatDebugPrompt does. The prompt being sent is never
-// modified. Any other prompt type is returned unchanged.
+// Gemini, Imagen, Claude and open MaaS (Chat Completions) prompts with their
+// inline base64 media truncated, as the TS client's formatDebugPrompt does. The
+// prompt being sent is never modified. Any other prompt type is returned
+// unchanged.
 func (d *VertexAIDriver) FormatDebugPrompt(prompt any) any {
 	switch value := prompt.(type) {
 	case geminiPrompt:
@@ -17,6 +19,8 @@ func (d *VertexAIDriver) FormatDebugPrompt(prompt any) any {
 		return formatImagenDebugPrompt(value)
 	case internalclaude.Prompt:
 		return internalclaude.FormatDebugPrompt(value)
+	case openaidriver.ChatCompletionsPrompt, *openaidriver.ChatCompletionsPrompt:
+		return openaidriver.FormatChatCompletionsDebugPrompt(value)
 	default:
 		return prompt
 	}

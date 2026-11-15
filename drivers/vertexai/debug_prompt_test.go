@@ -12,6 +12,7 @@ import (
 
 	"github.com/vertesia/llumiverse-go/core"
 	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
+	openaidriver "github.com/vertesia/llumiverse-go/drivers/openai"
 	"golang.org/x/oauth2"
 )
 
@@ -117,5 +118,12 @@ func TestVertexDebugPromptLeavesOtherPromptsUnchanged(t *testing.T) {
 	sent, _ := json.Marshal(prompt)
 	if strings.Contains(string(debug), encoded) || !strings.Contains(string(debug), core.BinaryTruncatedMarker) || !strings.Contains(string(sent), encoded) {
 		t.Fatalf("Claude debug prompt = %s", debug)
+	}
+
+	// Open MaaS (Chat Completions) prompts go to the OpenAI formatter.
+	maas := openaidriver.ChatCompletionsPrompt{Messages: []map[string]any{{"role": "user", "content": []any{map[string]any{"type": "image_url", "image_url": map[string]any{"url": "data:image/png;base64," + encoded}}}}}}
+	debug, _ = json.Marshal(driver.FormatDebugPrompt(maas))
+	if strings.Contains(string(debug), encoded) || !strings.Contains(string(debug), core.BinaryTruncatedMarker) {
+		t.Fatalf("MaaS debug prompt = %s", debug)
 	}
 }
