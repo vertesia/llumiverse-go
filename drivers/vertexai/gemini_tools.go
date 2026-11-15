@@ -275,7 +275,7 @@ func validateGeminiRequest(options ExecutionOptions, operation string) error {
 	choice := optionString(options.ModelOptions, "tool_choice")
 	if (hasRequiredName || choice == "required" || choice == "any") && len(options.Tools) == 0 {
 		message := "[Vertex AI Gemini] A required tool choice was requested, but no tools are available."
-		return newLlumiverseError(message, ptr(false), context, errors.New(message), 400, "ToolChoiceConfigurationError")
+		return newLlumiverseError(message, ptr(false), context, nil, 400, "ToolChoiceConfigurationError")
 	}
 	return nil
 }

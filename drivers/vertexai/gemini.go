@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 )
 
 // requestGemini POSTs a generateContent request and converts the response into a
@@ -28,16 +29,20 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, d.geminiPayload(prompt, options), &response); err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
 	}
+	if err := checkGeminiResponseFinishReasons(response); err != nil {
+		return nil, d.formatError(err, options.Model, "execute")
+	}
 	if len(response.Candidates) > 0 {
 		assignGeminiFunctionCallIDs(response.Candidates[0].Content.Parts, collectGeminiFunctionCallIDs(prompt.Contents))
 	}
-	completion := geminiResponseToCompletion(response, options.IncludeOriginalResponse)
+	completion := geminiResponseToCompletion(response, options)
 	completion.Conversation = finalizeGeminiConversation(appendGeminiResponseToConversation(prompt, response), options)
 	return completion, nil
 }
 
 // requestGeminiStream opens a streamGenerateContent SSE stream, decodes each
-// chunk, and rebuilds the conversation once the stream is consumed.
+// chunk, and keeps the model's native parts (thoughts and their signatures
+// included) for the conversation once the stream is consumed.
 func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiPrompt, options ExecutionOptions) (CompletionStream, error) {
 	if err := validateGeminiRequest(options, "stream"); err != nil {
 		return nil, err
@@ -62,10 +67,15 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 	}
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: geminiInput}
+	includeThoughts := geminiIncludeThoughts(options.ModelOptions)
 	// A functionCall part always arrives complete in one chunk, so each call gets
 	// its unique id on arrival and the shared stream keeps parallel calls to one
 	// tool apart.
 	usedCallIDs := collectGeminiFunctionCallIDs(geminiInput.Contents)
+	var (
+		mu          sync.Mutex
+		nativeParts []geminiPart
+	)
 	go func() {
 		defer close(ch)
 		err := scanSSE(body, func(event sseEvent) error {
@@ -76,10 +86,18 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 			if err := json.Unmarshal([]byte(event.Data), &response); err != nil {
 				return err
 			}
+			if err := checkGeminiResponseFinishReasons(response); err != nil {
+				return err
+			}
 			for _, candidate := range response.Candidates {
 				assignGeminiFunctionCallIDs(candidate.Content.Parts, usedCallIDs)
 			}
-			chunk := geminiResponseToChunk(response)
+			if len(response.Candidates) > 0 && geminiIsModelContent(response.Candidates[0].Content) {
+				mu.Lock()
+				nativeParts = appendGeminiStreamParts(nativeParts, response.Candidates[0].Content.Parts)
+				mu.Unlock()
+			}
+			chunk := geminiResponseToChunk(response, includeThoughts)
 			if len(chunk.Result) > 0 || len(chunk.ToolUse) > 0 || chunk.FinishReason != "" || chunk.TokenUsage != nil {
 				ch <- streamItem{Chunk: chunk}
 			}
@@ -90,6 +108,22 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 		}
 	}()
 	return newChannelStreamWithFinalizer(ch, completion, body.Close, func(resp *ExecutionResponse) {
-		resp.Conversation = finalizeGeminiConversation(buildGeminiStreamingConversation(geminiInput, &resp.Completion), options)
+		mu.Lock()
+		parts := append([]geminiPart(nil), nativeParts...)
+		mu.Unlock()
+		resp.Conversation = finalizeGeminiConversation(appendGeminiStreamedTurn(geminiInput, parts), options)
 	}), nil
+}
+
+// geminiIsModelContent reports whether a streamed candidate carries model parts.
+func geminiIsModelContent(content geminiContent) bool {
+	return len(content.Parts) > 0 && (content.Role == "" || content.Role == "model")
+}
+
+// appendGeminiStreamedTurn appends the model turn accumulated from a stream.
+func appendGeminiStreamedTurn(prompt geminiPrompt, parts []geminiPart) geminiPrompt {
+	if len(parts) > 0 {
+		prompt.Contents = append(prompt.Contents, geminiContent{Role: "model", Parts: parts})
+	}
+	return prompt
 }

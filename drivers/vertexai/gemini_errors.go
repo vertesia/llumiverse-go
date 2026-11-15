@@ -128,6 +128,11 @@ func formatGeminiError(err error, model string, operation string) error {
 		return err
 	}
 	context := LlumiverseErrorContext{Provider: ProviderVertexAI, Model: model, Operation: operation}
+	var finishErr *geminiFinishReasonError
+	if errors.As(err, &finishErr) {
+		// A terminal finish reason has no HTTP status; the reason names the error.
+		return newLlumiverseError(finishErr.Error(), finishErr.retryable, context, err, 0, finishErr.finishReason)
+	}
 	var mediaErr *geminiInlineMediaLimitError
 	if errors.As(err, &mediaErr) {
 		return newLlumiverseError(mediaErr.Error(), ptr(false), context, err, mediaErr.StatusCode(), "GeminiInlineMediaLimitError")

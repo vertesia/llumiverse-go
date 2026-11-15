@@ -419,8 +419,10 @@ func TestVertexGeminiDefaultThinkingAndImageConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	config := got["generationConfig"].(map[string]any)
+	// Without a thinking control only include_thoughts is sent, so the model keeps
+	// its own default thinking level.
 	thinking := config["thinkingConfig"].(map[string]any)
-	if thinking["thinkingLevel"] != "HIGH" || thinking["includeThoughts"] != true {
+	if _, ok := thinking["thinkingLevel"]; ok || thinking["includeThoughts"] != true {
 		t.Fatalf("thinkingConfig = %#v", thinking)
 	}
 	modalities := config["responseModalities"].([]any)
@@ -447,7 +449,7 @@ func TestVertexThinkingAndEmbeddingHelperBranches(t *testing.T) {
 		Model:        "gemini-2.5-flash",
 		ModelOptions: map[string]any{"include_thoughts": true},
 	})
-	if thinking["thinkingBudget"] != 0 || thinking["includeThoughts"] != true {
+	if _, ok := thinking["thinkingBudget"]; ok || thinking["includeThoughts"] != true {
 		t.Fatalf("default flash thinking = %#v", thinking)
 	}
 
@@ -890,31 +892,15 @@ func TestVertexHelperBranches(t *testing.T) {
 	if len(tools) != 1 || tools[0]["name"] != "lookup" || tools[0]["parametersJsonSchema"] == nil {
 		t.Fatalf("tools = %#v", tools)
 	}
-	streamed := buildGeminiStreamingConversation(geminiPrompt{}, &Completion{
-		Result: []CompletionResult{newTextResult("hello")},
-		ToolUse: []ToolUse{{
-			ID:               "lookup",
-			ToolName:         "lookup",
-			ToolInput:        &JSONObject{"q": "tokyo"},
-			ThoughtSignature: ptr("sig"),
-		}},
-	})
-	if len(streamed.Contents) != 1 || len(streamed.Contents[0].Parts) != 2 || streamed.Contents[0].Parts[1].ThoughtSignature != "sig" {
-		t.Fatalf("streamed conversation = %#v", streamed)
+	streamed := appendGeminiStreamParts(nil, []geminiPart{{Text: "hel"}, {Text: "lo"}})
+	streamed = appendGeminiStreamParts(streamed, []geminiPart{{FunctionCall: &geminiFunctionCall{ID: "lookup", Name: "lookup"}, ThoughtSignature: "sig"}})
+	if len(streamed) != 2 || streamed[0].Text != "hello" || streamed[1].ThoughtSignature != "sig" {
+		t.Fatalf("streamed parts = %#v", streamed)
 	}
-	if got := geminiThinkingLevelForEffort("gemini-3-pro-image-preview", "low"); got != "HIGH" {
-		t.Fatalf("image level = %q", got)
-	}
-	if got := geminiThinkingLevelForEffort("gemini-3.1-flash-image", "low"); got != "MINIMAL" {
-		t.Fatalf("flash image low = %q", got)
-	}
-	if got := geminiThinkingLevelForEffort("gemini-3.1-flash-image", "medium"); got != "HIGH" {
-		t.Fatalf("flash image medium = %q", got)
-	}
-	if got := geminiThinkingLevelForEffort("gemini-3-pro", "medium"); got != "MEDIUM" {
+	if got := geminiThinkingLevelForEffort("medium"); got != "MEDIUM" {
 		t.Fatalf("medium level = %q", got)
 	}
-	if got := geminiThinkingLevelForEffort("gemini-3-pro", "unknown"); got != "" {
+	if got := geminiThinkingLevelForEffort("unknown"); got != "" {
 		t.Fatalf("unknown level = %q", got)
 	}
 	if got := geminiBudgetForEffort("gemini-2.5-pro", "high"); got != 32768 {
@@ -929,13 +915,10 @@ func TestVertexHelperBranches(t *testing.T) {
 	if got := geminiBudgetForEffort("gemini-2.5-flash", "high"); got != 24576 {
 		t.Fatalf("flash high budget = %d", got)
 	}
-	if got := geminiBudgetForEffort("gemini-2.5", "unknown"); got != 0 {
-		t.Fatalf("unknown budget = %d", got)
-	}
 	if got := geminiFinishReason("MAX_TOKENS"); got != "length" {
 		t.Fatalf("finish = %q", got)
 	}
-	if geminiUsage(0, 0, 0, 0) != nil {
+	if geminiUsage(geminiUsageMetadata{}) != nil {
 		t.Fatal("zero Gemini usage should be nil")
 	}
 }
@@ -1029,14 +1012,14 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 		t.Fatal("GCS URL helper returned unexpected result")
 	}
 
-	blocked := geminiResponseToChunk(geminiResponse{})
+	blocked := geminiResponseToChunk(geminiResponse{}, true)
 	if blocked.TokenUsage != nil || blocked.FinishReason != "" || len(blocked.Result) != 0 {
 		t.Fatalf("empty chunk = %#v", blocked)
 	}
 	blocked = geminiResponseToChunk(geminiResponse{PromptFeedback: struct {
 		BlockReason        string `json:"blockReason"`
 		BlockReasonMessage string `json:"blockReasonMessage"`
-	}{BlockReason: "SAFETY", BlockReasonMessage: "blocked"}})
+	}{BlockReason: "SAFETY", BlockReasonMessage: "blocked"}}, true)
 	if blocked.FinishReason != "SAFETY" || blocked.Result[0].String() != "blocked" {
 		t.Fatalf("blocked chunk = %#v", blocked)
 	}
@@ -1054,14 +1037,14 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 	}`), &response); err != nil {
 		t.Fatal(err)
 	}
-	completion := geminiResponseToCompletion(response, true)
+	completion := geminiResponseToCompletion(response, ExecutionOptions{IncludeOriginalResponse: true})
 	if completion.OriginalResponse == nil || completion.FinishReason != "tool_use" || len(completion.Result) != 2 || len(completion.ToolUse) != 1 {
 		t.Fatalf("completion = %#v", completion)
 	}
 	if completion.TokenUsage == nil || completion.TokenUsage.Result == nil || *completion.TokenUsage.Result != 8 || completion.TokenUsage.PromptNew == nil || *completion.TokenUsage.PromptNew != 3 {
 		t.Fatalf("usage = %#v", completion.TokenUsage)
 	}
-	if empty := geminiResponseToCompletion(geminiResponse{}, false); len(empty.Result) != 1 || empty.Result[0].String() != "" {
+	if empty := geminiResponseToCompletion(geminiResponse{}, ExecutionOptions{}); len(empty.Result) != 1 || empty.Result[0].String() != "" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 }

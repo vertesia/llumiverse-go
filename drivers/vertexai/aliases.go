@@ -75,11 +75,9 @@ var (
 	truncateForConversation       = core.TruncateForConversation
 	removeNilMapValues            = core.RemoveNilMapValues
 	normalizeEmbeddingsOptions    = core.NormalizeEmbeddingsOptions
-	completionResultsToText       = core.CompletionResultsToText
 	toolInputString               = core.ToolInputString
 	optionFloat                   = core.OptionFloat
 	optionInt                     = core.OptionInt
-	optionBool                    = core.OptionBool
 	optionString                  = core.OptionString
 	optionStringSlice             = core.OptionStringSlice
 	hasHTTPTimeout                = core.HasHTTPTimeout
@@ -90,6 +88,7 @@ var (
 	newLlumiverseError            = common.NewLlumiverseError
 	newTextResult                 = common.NewTextResult
 	newImageResult                = common.NewImageResult
+	newThoughtsResult             = common.NewThoughtsResult
 	tokens                        = common.Tokens
 	toolInputObject               = common.ToolInputObject
 )

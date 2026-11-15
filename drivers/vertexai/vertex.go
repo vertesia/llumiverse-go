@@ -95,6 +95,23 @@ type geminiPart struct {
 	FunctionCall     *geminiFunctionCall   `json:"functionCall,omitempty"`
 	FunctionResponse *geminiFunctionResult `json:"functionResponse,omitempty"`
 	ThoughtSignature string                `json:"thoughtSignature,omitempty"`
+	// Thought marks a thought-summary part; it is sent back unchanged so the
+	// model's reasoning chain stays intact.
+	Thought bool `json:"thought,omitempty"`
+}
+
+// MarshalJSON always emits a text field on a part that carries no other data, so
+// an empty signed terminal part (text "" plus a thought signature) keeps the
+// data field Gemini requires.
+func (p geminiPart) MarshalJSON() ([]byte, error) {
+	type plain geminiPart
+	if p.InlineData != nil || p.FileData != nil || p.FunctionCall != nil || p.FunctionResponse != nil || p.Text != "" {
+		return json.Marshal(plain(p))
+	}
+	return json.Marshal(struct {
+		Text string `json:"text"`
+		plain
+	}{Text: p.Text, plain: plain(p)})
 }
 
 // geminiInlineData carries base64-encoded media embedded directly in the request.
@@ -483,31 +500,44 @@ func optionBoolPtrValue(options map[string]any, key string) any {
 // geminiPayload assembles the generateContent request body: sampling/limit options
 // map into generationConfig, a ResultSchema without tools is sent via Gemini's
 // structured-output transport (responseJsonSchema + JSON mime type) rather than the
-// prompt, thinkingConfig is added when applicable, image models enable IMAGE output
-// modality and imageConfig, and tools add functionDeclarations with AUTO calling.
+// prompt, thinkingConfig is added only when the caller sets a thinking control,
+// image models (Nano Banana included) enable IMAGE output with imageConfig and no
+// tools, and tools add functionDeclarations with the requested calling mode.
 // When tools are disabled but the history still has function parts, they are
 // converted to text so the request stays valid without toolConfig.
 func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOptions) map[string]any {
-	config := map[string]any{
-		"candidateCount": 1,
+	lowerModel := strings.ToLower(options.Model)
+	isNanoBanana := strings.Contains(lowerModel, "gemini-nano-banana")
+	isImageModel := isNanoBanana || strings.Contains(lowerModel, "image")
+	config := map[string]any{}
+	// Retain the single-candidate contract only where the model accepts it; caller
+	// sampling options still pass through for provider validation.
+	if isImageModel || !hasGeminiSamplingRestriction(options.Model) {
+		config["candidateCount"] = 1
 	}
-	if v := optionFloat(options.ModelOptions, "temperature"); v != nil {
-		config["temperature"] = *v
+	// Nano Banana does not accept sampling parameters.
+	if !isNanoBanana {
+		if v := optionFloat(options.ModelOptions, "temperature"); v != nil {
+			config["temperature"] = *v
+		}
+		if v := optionFloat(options.ModelOptions, "top_p"); v != nil {
+			config["topP"] = *v
+		}
 	}
-	if v := optionFloat(options.ModelOptions, "top_p"); v != nil {
-		config["topP"] = *v
-	}
-	if v := optionInt(options.ModelOptions, "top_k"); v != nil {
-		config["topK"] = *v
-	}
-	if v := optionFloat(options.ModelOptions, "presence_penalty"); v != nil {
-		config["presencePenalty"] = *v
-	}
-	if v := optionFloat(options.ModelOptions, "frequency_penalty"); v != nil {
-		config["frequencyPenalty"] = *v
-	}
-	if v := optionInt(options.ModelOptions, "seed"); v != nil {
-		config["seed"] = *v
+	// Image generation requests omit the other generation controls.
+	if !isImageModel {
+		if v := optionInt(options.ModelOptions, "top_k"); v != nil {
+			config["topK"] = *v
+		}
+		if v := optionFloat(options.ModelOptions, "presence_penalty"); v != nil {
+			config["presencePenalty"] = *v
+		}
+		if v := optionFloat(options.ModelOptions, "frequency_penalty"); v != nil {
+			config["frequencyPenalty"] = *v
+		}
+		if v := optionInt(options.ModelOptions, "seed"); v != nil {
+			config["seed"] = *v
+		}
 	}
 	if v := optionInt(options.ModelOptions, "max_tokens"); v != nil {
 		config["maxOutputTokens"] = *v
@@ -515,16 +545,17 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 	if stops := optionStringSlice(options.ModelOptions, "stop_sequence"); len(stops) > 0 {
 		config["stopSequences"] = stops
 	}
-	if options.ResultSchema != nil && len(options.Tools) == 0 {
+	if options.ResultSchema != nil && len(options.Tools) == 0 && !isImageModel {
 		// Use Gemini's structured-output transport instead of placing the schema in
 		// the prompt; this avoids competing instructions and provider token bloat.
 		config["responseMimeType"] = "application/json"
 		config["responseJsonSchema"] = options.ResultSchema
 	}
-	if thinking := geminiThinkingConfig(options); len(thinking) > 0 {
+	if thinking := geminiThinkingConfig(options); thinking != nil {
 		config["thinkingConfig"] = thinking
 	}
-	if strings.Contains(strings.ToLower(options.Model), "image") {
+	if isImageModel {
+		// TEXT alone is an error and IMAGE alone returns blank responses.
 		config["responseModalities"] = []string{"TEXT", "IMAGE"}
 		imageConfig := removeNilMapValues(map[string]any{
 			"aspectRatio":              optionString(options.ModelOptions, "image_aspect_ratio"),
@@ -538,7 +569,9 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 			config["imageConfig"] = imageConfig
 		}
 	}
-	contents := geminiRequestContents(prompt.Contents, len(options.Tools) > 0)
+	// Image generation requests declare no tools.
+	hasTools := len(options.Tools) > 0 && !isImageModel
+	contents := geminiRequestContents(prompt.Contents, hasTools)
 	payload := map[string]any{
 		"contents":         contents,
 		"generationConfig": config,
@@ -549,7 +582,7 @@ func (d *VertexAIDriver) geminiPayload(prompt geminiPrompt, options ExecutionOpt
 	if prompt.System != nil {
 		payload["systemInstruction"] = prompt.System
 	}
-	if len(options.Tools) > 0 {
+	if hasTools {
 		// Gemini expects one tool entry that contains all function declarations.
 		payload["tools"] = []map[string]any{{
 			"functionDeclarations": geminiTools(options.Tools),
@@ -660,32 +693,6 @@ func appendGeminiResponseToConversation(prompt geminiPrompt, response geminiResp
 	return prompt
 }
 
-// buildGeminiStreamingConversation reconstructs the model turn from a streamed
-// completion and appends it to the conversation.
-func buildGeminiStreamingConversation(prompt geminiPrompt, completion *Completion) geminiPrompt {
-	// Streaming does not return one final candidate object, so rebuild the model
-	// turn from accumulated text and function-call chunks before cleanup.
-	parts := []geminiPart{}
-	if text := completionResultsToText(completion.Result); text != "" {
-		parts = append(parts, geminiPart{Text: text})
-	}
-	for _, tool := range completion.ToolUse {
-		var args any
-		if tool.ToolInput != nil {
-			args = map[string]any(*tool.ToolInput)
-		}
-		parts = append(parts, geminiPart{
-			// The tool-use id is the call id, so a later tool result can find this call.
-			FunctionCall:     &geminiFunctionCall{ID: tool.ID, Name: tool.ToolName, Args: args},
-			ThoughtSignature: stringValue(tool.ThoughtSignature),
-		})
-	}
-	if len(parts) > 0 {
-		prompt.Contents = append(prompt.Contents, geminiContent{Role: "model", Parts: parts})
-	}
-	return prompt
-}
-
 // geminiContentsContainToolParts reports whether any turn carries a functionCall
 // or functionResponse part.
 func geminiContentsContainToolParts(contents []geminiContent) bool {
@@ -721,239 +728,6 @@ func convertGeminiFunctionPartsToText(contents []geminiContent) []geminiContent 
 		out = append(out, next)
 	}
 	return out
-}
-
-// geminiThinkingConfig builds the thinkingConfig object. 3.x models use a
-// thinkingLevel, 2.5 models use a numeric thinkingBudget; explicit options win and
-// otherwise low-cost per-model defaults are applied.
-func geminiThinkingConfig(options ExecutionOptions) map[string]any {
-	out := map[string]any{}
-	explicitThinking := false
-	// Gemini 2.5 and 3.x expose different thinking controls. Explicit
-	// thinking_budget_tokens/thinking_level/effort values take priority; otherwise
-	// the TS driver applies low-cost defaults so supported models stay predictable.
-	if v := optionInt(options.ModelOptions, "thinking_budget_tokens"); v != nil {
-		out["thinkingBudget"] = *v
-		explicitThinking = true
-	}
-	if level := optionString(options.ModelOptions, "thinking_level"); level != "" {
-		out["thinkingLevel"] = level
-		explicitThinking = true
-	}
-	if effort := optionString(options.ModelOptions, "effort"); effort != "" {
-		explicitThinking = true
-		if isGeminiVersionGTE(options.Model, "3.0") {
-			out["thinkingLevel"] = geminiThinkingLevelForEffort(options.Model, effort)
-		} else if _, ok := out["thinkingBudget"]; !ok {
-			out["thinkingBudget"] = geminiBudgetForEffort(options.Model, effort)
-		}
-	}
-	if optionBool(options.ModelOptions, "include_thoughts") {
-		// include_thoughts controls whether reasoning is returned; it does not
-		// select the thinking budget or level by itself.
-		out["includeThoughts"] = true
-	}
-	if !explicitThinking {
-		if isGeminiVersionGTE(options.Model, "3.0") {
-			if strings.Contains(options.Model, "gemini-3-pro-image") {
-				out["thinkingLevel"] = "HIGH"
-			} else {
-				out["thinkingLevel"] = "LOW"
-			}
-			return out
-		}
-		if isGeminiVersionGTE(options.Model, "2.5") {
-			if strings.Contains(options.Model, "pro") {
-				out["thinkingBudget"] = 128
-			} else {
-				out["thinkingBudget"] = 0
-			}
-		}
-	}
-	return out
-}
-
-// geminiThinkingLevelForEffort maps a neutral effort value to a Gemini 3.x
-// thinkingLevel, with per-model overrides for the image variants.
-func geminiThinkingLevelForEffort(model string, effort string) string {
-	if strings.Contains(model, "gemini-3-pro-image") {
-		return "HIGH"
-	}
-	if strings.Contains(model, "gemini-3.1-flash-image") {
-		if effort == "low" {
-			return "MINIMAL"
-		}
-		return "HIGH"
-	}
-	switch effort {
-	case "low":
-		return "LOW"
-	case "medium":
-		return "MEDIUM"
-	case "high":
-		return "HIGH"
-	default:
-		return ""
-	}
-}
-
-// geminiBudgetForEffort maps a neutral effort value to a numeric thinkingBudget
-// for Gemini 2.5 models, scaled by the model tier (pro/flash/flash-lite).
-func geminiBudgetForEffort(model string, effort string) int {
-	isFlashLite := strings.Contains(model, "flash-lite")
-	isFlash := strings.Contains(model, "flash") && !isFlashLite
-	isPro := strings.Contains(model, "pro")
-	switch effort {
-	case "low":
-		if isPro {
-			return 128
-		}
-		if isFlashLite {
-			return 512
-		}
-		if isFlash {
-			return 1
-		}
-		return 1024
-	case "medium":
-		return 8192
-	case "high":
-		if isPro {
-			return 32768
-		}
-		if isFlash || isFlashLite {
-			return 24576
-		}
-		return 8192
-	default:
-		return 0
-	}
-}
-
-// geminiResponse is the generateContent / streamGenerateContent response: candidate
-// turns, prompt-level safety feedback, and token usage metadata.
-type geminiResponse struct {
-	Candidates []struct {
-		FinishReason  string        `json:"finishReason"`
-		FinishMessage string        `json:"finishMessage"`
-		Content       geminiContent `json:"content"`
-	} `json:"candidates"`
-	PromptFeedback struct {
-		BlockReason        string `json:"blockReason"`
-		BlockReasonMessage string `json:"blockReasonMessage"`
-	} `json:"promptFeedback"`
-	UsageMetadata struct {
-		PromptTokenCount        int `json:"promptTokenCount"`
-		CandidatesTokenCount    int `json:"candidatesTokenCount"`
-		TotalTokenCount         int `json:"totalTokenCount"`
-		CachedContentTokenCount int `json:"cachedContentTokenCount"`
-		ThoughtsTokenCount      int `json:"thoughtsTokenCount"`
-		ToolUsePromptTokenCount int `json:"toolUsePromptTokenCount"`
-	} `json:"usageMetadata"`
-}
-
-// geminiResponseToCompletion converts a full response into a Completion, ensuring
-// at least one (empty) text result and optionally attaching the raw response.
-func geminiResponseToCompletion(response geminiResponse, includeOriginal bool) *Completion {
-	chunk := geminiResponseToChunk(response)
-	completion := &Completion{
-		Result:       chunk.Result,
-		TokenUsage:   chunk.TokenUsage,
-		ToolUse:      geminiToolUses(chunk.ToolUse),
-		FinishReason: chunk.FinishReason,
-	}
-	if len(completion.Result) == 0 {
-		completion.Result = []CompletionResult{newTextResult("")}
-	}
-	if includeOriginal {
-		completion.OriginalResponse = response
-	}
-	return completion
-}
-
-// geminiToolUses converts the function-call chunks of a full response into the
-// final ToolUse entries, carrying the thought signature only when Gemini sent one.
-func geminiToolUses(chunks []ToolUseChunk) []ToolUse {
-	if chunks == nil {
-		return nil
-	}
-	tools := make([]ToolUse, 0, len(chunks))
-	for _, chunk := range chunks {
-		tool := ToolUse{ID: chunk.ID, ToolName: chunk.ToolName, ToolInput: toolInputObject(chunk.ToolInput)}
-		if chunk.ThoughtSignature != "" {
-			tool.ThoughtSignature = ptr(chunk.ThoughtSignature)
-		}
-		tools = append(tools, tool)
-	}
-	return tools
-}
-
-// geminiResponseToChunk converts a response (full or streamed) into a CompletionChunk:
-// it sums thinking/tool tokens into the result count, surfaces blocked-prompt
-// feedback as text, maps text/image/functionCall parts, and marks tool_use when
-// any function call is present.
-func geminiResponseToChunk(response geminiResponse) CompletionChunk {
-	chunk := CompletionChunk{TokenUsage: geminiUsage(response.UsageMetadata.PromptTokenCount, response.UsageMetadata.CandidatesTokenCount+response.UsageMetadata.ThoughtsTokenCount+response.UsageMetadata.ToolUsePromptTokenCount, response.UsageMetadata.TotalTokenCount, response.UsageMetadata.CachedContentTokenCount)}
-	if len(response.Candidates) == 0 {
-		if response.PromptFeedback.BlockReasonMessage != "" {
-			chunk.Result = []CompletionResult{newTextResult(response.PromptFeedback.BlockReasonMessage)}
-		}
-		chunk.FinishReason = response.PromptFeedback.BlockReason
-		return chunk
-	}
-	candidate := response.Candidates[0]
-	chunk.FinishReason = geminiFinishReason(candidate.FinishReason)
-	for _, part := range candidate.Content.Parts {
-		if part.Text != "" {
-			chunk.Result = append(chunk.Result, newTextResult(part.Text))
-		}
-		if part.InlineData != nil {
-			chunk.Result = append(chunk.Result, newImageResult("data:"+part.InlineData.MIMEType+";base64,"+part.InlineData.Data))
-		}
-		if part.FunctionCall != nil {
-			// Tool-call finish reasons are recoverable: return tool_use so the
-			// caller can execute the tool or report a toolError, rather than
-			// treating the model response as a provider failure.
-			chunk.ToolUse = append(chunk.ToolUse, ToolUseChunk{
-				ID:               geminiToolUseID(part.FunctionCall),
-				ToolName:         part.FunctionCall.Name,
-				ToolInput:        part.FunctionCall.Args,
-				ThoughtSignature: part.ThoughtSignature,
-			})
-		}
-	}
-	if len(chunk.ToolUse) > 0 {
-		chunk.FinishReason = "tool_use"
-	}
-	return chunk
-}
-
-// geminiUsage builds token usage accounting, deriving PromptNew from prompt minus
-// cached tokens and returning nil when no usage was reported.
-func geminiUsage(prompt, result, total, cached int) *ExecutionTokenUsage {
-	if prompt == 0 && result == 0 && total == 0 && cached == 0 {
-		return nil
-	}
-	return &ExecutionTokenUsage{
-		Prompt:       tokens(prompt),
-		Result:       tokens(result),
-		Total:        tokens(total),
-		PromptCached: tokens(cached),
-		PromptNew:    tokens(prompt - cached),
-	}
-}
-
-// geminiFinishReason maps Gemini finish reasons to the neutral vocabulary, passing
-// unknown reasons through unchanged.
-func geminiFinishReason(reason string) string {
-	switch reason {
-	case "STOP":
-		return "stop"
-	case "MAX_TOKENS":
-		return "length"
-	default:
-		return reason
-	}
 }
 
 // ListModels lists published Google and Anthropic models for the project/region,

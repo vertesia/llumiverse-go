@@ -26,6 +26,12 @@ func finalizeGeminiConversation(conversation geminiPrompt, options ExecutionOpti
 func processGeminiPartsForConversation(parts []geminiPart, options ExecutionOptions, stripMedia bool, stripHeartbeats bool) []geminiPart {
 	out := make([]geminiPart, 0, len(parts))
 	for _, part := range parts {
+		if part.ThoughtSignature != "" {
+			// A signed part must reach Gemini byte for byte, or the model rejects
+			// the reasoning chain it belongs to.
+			out = append(out, part)
+			continue
+		}
 		if part.InlineData != nil && stripMedia {
 			// Gemini inlineData blocks can contain large base64 payloads; replace
 			// the entire part so a later request still has a valid text part.
