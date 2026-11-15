@@ -56,6 +56,8 @@ const (
 	embeddingInputText = core.EmbeddingInputText
 
 	modelTypeText               = wire.ModelTypeText
+	modelTypeImage              = wire.ModelTypeImage
+	modelTypeAudio              = wire.ModelTypeAudio
 	embeddingOutputModalityText = wire.EmbeddingOutputModalityText
 )
 

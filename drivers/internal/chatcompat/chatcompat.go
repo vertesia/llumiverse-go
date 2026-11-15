@@ -103,18 +103,3 @@ func IsQwenVersionGTE(model string, major, minor int) bool {
 	}
 	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
 }
-
-// IsEmbeddingModelID reports whether a model ID names an embedding model, the check model listings use without a
-// capability catalogue.
-func IsEmbeddingModelID(model string) bool {
-	return strings.Contains(strings.ToLower(model), "embed")
-}
-
-// IsEmbeddingModality reports whether a listing modality names embedding output.
-func IsEmbeddingModality(modality string) bool {
-	switch strings.ToLower(modality) {
-	case "embed", "embedding", "embeddings", "vectors":
-		return true
-	}
-	return false
-}

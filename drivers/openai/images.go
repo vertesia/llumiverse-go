@@ -13,14 +13,15 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go/v3/option"
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/wire"
 )
 
-// isOpenAIImageModel detects image-generation models (dall-e/gpt-image/
-// chatgpt-image), which route to the Images API instead of Responses.
-func isOpenAIImageModel(model string) bool {
-	model = strings.ToLower(model)
-	return strings.Contains(model, "dall-e") || strings.Contains(model, "gpt-image") || strings.Contains(model, "chatgpt-image")
+// isImageModel reports image generation models (GPT Image, DALL-E and the
+// other image families of the capability catalogue), which run on the Images
+// API, as the TS client decides by the model's catalogue family.
+func (d *OpenAICompatibleDriver) isImageModel(model string) bool {
+	return capability.ResolveProfile(model, d.Provider()).Family == "image"
 }
 
 var openAIImageVersionPattern = regexp.MustCompile(`(?:^|[./:])(?:openai\.)?gpt-image-(\d+)(?:\.(\d+))?(?:-|$)`)

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+
+	"github.com/vertesia/llumiverse-go/capability"
 )
 
 const defaultAnthropicBaseURL = "https://api.anthropic.com"
@@ -155,8 +157,8 @@ func (d *AnthropicDriver) headers() map[string]string {
 	}
 }
 
-// ListModels fetches the available Claude models from GET /v1/models, marking
-// them all as text models with streaming and tool support.
+// ListModels fetches the available Claude models from GET /v1/models as streaming text models, with the modalities
+// and tool support the capability catalogue gives them.
 func (d *AnthropicDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) ([]AIModel, error) {
 	endpoint, err := joinEndpoint(d.options.BaseURL, "v1", "models")
 	if err != nil {
@@ -177,14 +179,15 @@ func (d *AnthropicDriver) ListModels(ctx context.Context, _ *ModelSearchPayload)
 		if name == "" {
 			name = item.ID
 		}
-		models = append(models, AIModel{
-			ID:          item.ID,
-			Name:        name,
-			Provider:    string(ProviderAnthropic),
-			Type:        ptr(ModelType("text")),
-			CanStream:   ptr(true),
-			ToolSupport: ptr(true),
-		})
+		model := AIModel{
+			ID:        item.ID,
+			Name:      name,
+			Provider:  string(ProviderAnthropic),
+			Type:      ptr(ModelType("text")),
+			CanStream: ptr(true),
+		}
+		capability.ForModel(item.ID, ProviderAnthropic).Apply(&model)
+		models = append(models, model)
 	}
 	return models, nil
 }

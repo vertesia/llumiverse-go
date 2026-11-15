@@ -202,6 +202,18 @@ for _, m := range models {
 }
 ```
 
+Listings fill modalities and tool support from the capability catalogue (package `capability`), which
+also answers questions about a model directly: what it takes and produces, whether it calls tools,
+its context and output limits and the reasoning efforts it accepts on a provider.
+
+```go
+profile := capability.ResolveProfile("claude-opus-4-8", llumiverse.ProviderBedrock)
+fmt.Println(profile.Family, profile.ContextWindow, profile.MaxOutputTokens)
+if capability.SupportsToolUse("gpt-5.5", llumiverse.ProviderOpenAI, true) {
+    // send tools while streaming
+}
+```
+
 ## Advanced features
 
 ### Tool calling
@@ -317,6 +329,7 @@ if _, err := driver.Execute(ctx, prompt, opts); err != nil {
 ```text
 common/                 shared public types, options, and errors
 core/                   Driver helpers, streams, prompts, and conversations
+capability/             model capability catalogue: modalities, tools, limits, efforts
 drivers/openai          OpenAI and OpenAI-compatible driver
 drivers/anthropic       direct Claude driver
 drivers/bedrock         AWS Bedrock driver

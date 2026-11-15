@@ -137,6 +137,10 @@ func TestTogetherListModelsFollowsTheCursor(t *testing.T) {
 	if llama.Name != "Llama 4" || *llama.Owner != "Meta" || !*llama.IsMultimodal || strings.Join(*llama.InputModalities, ",") != "text,image" {
 		t.Fatalf("llama = %+v", llama)
 	}
+	// Modalities come from the capability catalogue, which knows Qwen 3.8 without the listing saying.
+	if qwen := models[0]; strings.Join(*qwen.InputModalities, ",") != "text" || !*qwen.ToolSupport || *qwen.IsMultimodal {
+		t.Fatalf("qwen = %+v", qwen)
+	}
 	if *models[0].Type != "text" || *llama.Type != "chat" {
 		t.Fatalf("types = %v %v", *models[0].Type, *llama.Type)
 	}

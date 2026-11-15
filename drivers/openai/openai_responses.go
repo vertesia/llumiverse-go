@@ -233,7 +233,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 	if err := d.assertOpenAIConversationShape(options, "execute"); err != nil {
 		return nil, err
 	}
-	if isOpenAIImageModel(options.Model) {
+	if d.isImageModel(options.Model) {
 		return d.requestOpenAIImageGeneration(ctx, rp, options)
 	}
 	input := openAIResponsesInput(options.Conversation, rp.Items, openAIUseTools(options))
@@ -280,7 +280,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 		return nil, err
 	}
 	// Image generation models use the Images API, returned as one chunk.
-	if isOpenAIImageModel(options.Model) {
+	if d.isImageModel(options.Model) {
 		return d.openAIImageStream(ctx, prompt, options)
 	}
 	input := openAIResponsesInput(options.Conversation, rp.Items, openAIUseTools(options))

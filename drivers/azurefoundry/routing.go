@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/vertesia/llumiverse-go/capability"
 )
 
 // parseModelID splits a "deployment::source-model" ID. A bare deployment name
@@ -74,9 +76,8 @@ const (
 	protocolMessages  protocol = "messages"
 )
 
-// Model families the routing needs, resolved from the source model as the TS
-// client's model directory does. Routing follows the family, never a list of
-// model IDs, so new versions route without a release.
+// Model families the routing needs. Routing follows the source model's family in the capability catalogue, as in
+// the TS client, never a list of model IDs, so new versions route without a release.
 const (
 	familyEmbedding     = "embedding"
 	familyModeration    = "moderation"
@@ -86,81 +87,30 @@ const (
 	familySpeech        = "speech"
 	familyAudio         = "audio"
 	familyVideo         = "video"
-	familyGemini        = "gemini"
 	familyClaude        = "claude"
-	familyGPT           = "gpt"
-	familyOther         = "other"
 )
 
 var (
-	embeddingFamilyPattern = regexp.MustCompile(`(^|[-_.:])(?:embed|embedding|vector)(?:[-_.:]|$)`)
-	moderationPattern      = regexp.MustCompile(`(?:prompt-guard|moderation|safeguard)`)
-	realtimePattern        = regexp.MustCompile(`(?:realtime|live|native-audio)`)
-	transcriptionPattern   = regexp.MustCompile(`(?:whisper|transcribe)`)
-	speechPattern          = regexp.MustCompile(`(?:^|[-_.])tts(?:[-_.]|$)`)
-	audioPattern           = regexp.MustCompile(`(?:^|[-_.])audio(?:[-_.]|$)`)
-	oSeriesPattern         = regexp.MustCompile(`^o\d+(?:[-_.]|$)`)
-	sourcePrefixPattern    = regexp.MustCompile(`^(?:global|us|eu|apac)\.`)
-	publisherPrefixPattern = regexp.MustCompile(`^(?:openai|anthropic|google|xai)\.`)
-	codexPattern           = regexp.MustCompile(`(?:^|[-_.:/])codex(?:[-_.:/]|$)`)
-	dedicatedEndpointName  = regexp.MustCompile(`(?:^|[-_.:/])(?:embed|embeddings?|flux|whisper|transcribe|tts|realtime|moderation|sora)(?:[-_.:/]|$)`)
+	codexPattern          = regexp.MustCompile(`(?:^|[-_.:/])codex(?:[-_.:/]|$)`)
+	dedicatedEndpointName = regexp.MustCompile(`(?:^|[-_.:/])(?:embed|embeddings?|flux|whisper|transcribe|tts|realtime|moderation|sora)(?:[-_.:/]|$)`)
 )
 
-// normalizeSourceModel lowercases a model ID and keeps the source half of a
-// composite ID, without its path, region or publisher prefix.
-func normalizeSourceModel(model string) string {
-	normalized := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(model)), "~")
-	if parts := strings.Split(normalized, "::"); len(parts) > 1 {
-		normalized = parts[len(parts)-1]
-	}
-	if slash := strings.LastIndex(normalized, "/"); slash >= 0 {
-		normalized = normalized[slash+1:]
-	}
-	normalized = sourcePrefixPattern.ReplaceAllString(normalized, "")
-	return publisherPrefixPattern.ReplaceAllString(normalized, "")
-}
-
-// modelFamily returns the family of a source model and whether OpenAI publishes it.
-func modelFamily(model string) (family string, openAISource bool) {
-	normalized := normalizeSourceModel(model)
-	switch {
-	case embeddingFamilyPattern.MatchString(normalized):
-		return familyEmbedding, false
-	case moderationPattern.MatchString(normalized):
-		return familyModeration, false
-	case strings.Contains(normalized, "grok") && strings.Contains(normalized, "image"):
-		return familyImage, false
-	case strings.Contains(normalized, "gpt-image") || strings.Contains(normalized, "dall-e") || strings.Contains(normalized, "imagen-"):
-		return familyImage, !strings.Contains(normalized, "imagen")
-	case realtimePattern.MatchString(normalized):
-		return familyRealtime, !strings.Contains(normalized, "gemini")
-	case transcriptionPattern.MatchString(normalized):
-		return familyTranscription, true
-	case speechPattern.MatchString(normalized):
-		return familySpeech, true
-	case audioPattern.MatchString(normalized):
-		return familyAudio, true
-	case strings.Contains(normalized, "sora"):
-		return familyVideo, true
-	case strings.Contains(normalized, "gemini"):
-		return familyGemini, false
-	case strings.Contains(normalized, "claude"):
-		return familyClaude, false
-	case strings.Contains(normalized, "gpt") || oSeriesPattern.MatchString(normalized):
-		return familyGPT, true
-	}
-	return familyOther, false
+// modelFamily returns the catalogue family of a source model (the source half of a composite ID) on a provider, and
+// whether OpenAI makes it.
+func modelFamily(model string, provider Provider) (family string, openAISource bool) {
+	profile := capability.ResolveProfile(model, provider)
+	return profile.Family, profile.SourceProvider == "openai"
 }
 
 // isClaudeModel reports whether a source model is a Claude model.
-func isClaudeModel(model string) bool {
-	family, _ := modelFamily(model)
+func isClaudeModel(model string, provider Provider) bool {
+	family, _ := modelFamily(model, provider)
 	return family == familyClaude
 }
 
 // isImageModel reports whether a source model generates images.
-func isImageModel(model string) bool {
-	family, _ := modelFamily(model)
+func isImageModel(model string, provider Provider) bool {
+	family, _ := modelFamily(model, provider)
 	return family == familyImage
 }
 
@@ -169,7 +119,7 @@ func isImageModel(model string) bool {
 // models other than gpt-oss (and Codex models) use the Responses API, and every
 // other model uses Chat Completions.
 func inferProtocol(source string) protocol {
-	family, openAISource := modelFamily(source)
+	family, openAISource := modelFamily(source, ProviderAzureFoundry)
 	if family == familyClaude {
 		return protocolMessages
 	}
@@ -198,7 +148,7 @@ func protocolForPublisher(publisher string) protocol {
 // isOpenAIAudioModel reports whether an OpenAI source model is an audio task
 // (speech, transcription or chat audio) that the listing keeps.
 func isOpenAIAudioModel(model string) bool {
-	family, _ := modelFamily(model)
+	family, _ := modelFamily(model, ProviderAzureFoundry)
 	return family == familySpeech || family == familyTranscription || family == familyAudio
 }
 
@@ -214,7 +164,7 @@ func isStandardInferenceDeployment(deployment foundryDeployment) bool {
 	if publisher == "anthropic" {
 		return true
 	}
-	family, _ := modelFamily(deployment.ModelName)
+	family, _ := modelFamily(deployment.ModelName, ProviderAzureFoundry)
 	source := strings.ToLower(deployment.ModelName)
 	if strings.Contains(source, "dall-e") {
 		return false

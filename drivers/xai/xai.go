@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	openaisdk "github.com/openai/openai-go/v3"
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/common"
 	"github.com/vertesia/llumiverse-go/core"
 	"github.com/vertesia/llumiverse-go/drivers/openai"
@@ -228,9 +229,11 @@ func (d *XAIDriver) requestImageGeneration(ctx context.Context, prompt any, opti
 }
 
 type xaiModel struct {
-	ID      string `json:"id"`
-	OwnedBy string `json:"owned_by"`
-	Version string `json:"version"`
+	ID               string   `json:"id"`
+	OwnedBy          string   `json:"owned_by"`
+	Version          string   `json:"version"`
+	InputModalities  []string `json:"input_modalities"`
+	OutputModalities []string `json:"output_modalities"`
 }
 
 type xaiModels struct {
@@ -247,17 +250,22 @@ func (d *XAIDriver) ListModels(ctx context.Context, _ *common.ModelSearchPayload
 	}
 	models := make([]common.AIModel, 0, len(language.Models)+len(images.Models))
 	for _, model := range language.Models {
-		if strings.Contains(strings.ToLower(model.ID), "embed") {
+		listing := capability.Listing{ID: model.ID, InputModalities: model.InputModalities, OutputModalities: model.OutputModalities}
+		if capability.IsEmbeddingModel(listing, common.ProviderXAI) {
 			continue
 		}
-		models = append(models, common.AIModel{
+		// xAI's listed modalities have been incomplete, so the catalogue describes the model.
+		aiModel := common.AIModel{
 			ID:          model.ID,
 			Name:        model.ID,
 			Description: ptr(model.ID + " by " + model.OwnedBy),
 			Provider:    string(common.ProviderXAI),
 			Type:        ptr(wire.ModelTypeText),
 			CanStream:   ptr(true),
-		})
+		}
+		capability.ForModel(model.ID, common.ProviderXAI).Apply(&aiModel)
+		aiModel.Tags = modalityTags(aiModel)
+		models = append(models, aiModel)
 	}
 	for _, model := range images.Models {
 		aiModel := common.AIModel{
@@ -273,6 +281,10 @@ func (d *XAIDriver) ListModels(ctx context.Context, _ *common.ModelSearchPayload
 		if model.Version != "" {
 			aiModel.Version = ptr(model.Version)
 		}
+		capability.ForModel(model.ID, common.ProviderXAI).Apply(&aiModel)
+		aiModel.IsMultimodal = ptr(len(*aiModel.InputModalities) > 1)
+		aiModel.ToolSupport = ptr(false)
+		aiModel.Tags = modalityTags(aiModel)
 		models = append(models, aiModel)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
@@ -287,3 +299,15 @@ func (d *XAIDriver) ValidateConnection(ctx context.Context) error {
 func ptr[T any](v T) *T { return &v }
 
 var _ common.Driver = (*XAIDriver)(nil)
+
+// modalityTags tags a listed model with its modalities: i:text, o:image.
+func modalityTags(model common.AIModel) *[]string {
+	tags := []string{}
+	for _, modality := range *model.InputModalities {
+		tags = append(tags, "i:"+modality)
+	}
+	for _, modality := range *model.OutputModalities {
+		tags = append(tags, "o:"+modality)
+	}
+	return &tags
+}

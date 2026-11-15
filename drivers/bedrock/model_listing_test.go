@@ -2,6 +2,9 @@ package bedrock
 
 import (
 	"context"
+	"fmt"
+	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -20,7 +23,7 @@ func TestBedrockListModelsUsesCustomBaseModelAndSkipsEmbeddings(t *testing.T) {
 			{
 				ModelArn:      aws.String("arn:aws:bedrock:us-east-2:123456789012:custom-model/opaque-name"),
 				ModelName:     aws.String("opaque-name"),
-				BaseModelName: aws.String("amazon.nova-canvas-v1:0"),
+				BaseModelName: aws.String("openai.gpt-5.6-sol"),
 			},
 			{
 				ModelArn:      aws.String("arn:aws:bedrock:us-east-2:123456789012:custom-model/opaque-embedder"),
@@ -47,14 +50,44 @@ func TestBedrockListModelsUsesCustomBaseModelAndSkipsEmbeddings(t *testing.T) {
 	if models[0].ID != "amazon.nova-pro-v1:0" || custom.ID != "arn:aws:bedrock:us-east-2:123456789012:custom-model/opaque-name" {
 		t.Fatalf("models = %#v", models)
 	}
-	if outputs := *custom.OutputModalities; len(outputs) != 1 || outputs[0] != "image" {
-		t.Fatalf("custom model outputs = %v, want the base model's image output", outputs)
+	if inputs, outputs := *custom.InputModalities, *custom.OutputModalities; strings.Join(inputs, ",") != "text,image" || strings.Join(outputs, ",") != "text" {
+		t.Fatalf("custom model modalities = %v -> %v, want the base model's", inputs, outputs)
+	}
+	if custom.ToolSupport == nil || !*custom.ToolSupport {
+		t.Fatalf("custom model tool support = %v, want the base model's", custom.ToolSupport)
 	}
 }
 
-func TestBedrockModalitiesMapSpeechToAudio(t *testing.T) {
-	got := bedrockModalities([]bedrocktypes.ModelModality{bedrocktypes.ModelModalityText, "SPEECH"})
-	if len(got) != 2 || got[1] != "audio" {
-		t.Fatalf("modalities = %v", got)
+// Mirrors the TS model-listing.test.ts "uses AWS modalities only when the catalog
+// has no model information": the catalogue describes a model it knows, and the
+// modalities AWS lists (SPEECH read as audio) describe an unknown one.
+func TestBedrockListModelsUsesAWSModalitiesOnlyForUnknownModels(t *testing.T) {
+	catalogued := bedrockTestFoundationModel("nvidia.nemotron-nano-12b-v2-vl-bf16", "NVIDIA", "Nemotron Nano 12B")
+	catalogued.OutputModalities = []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText, bedrocktypes.ModelModalityImage}
+	future := bedrockTestFoundationModel("nvidia.future-foundation-model", "NVIDIA", "Future")
+	future.InputModalities = []bedrocktypes.ModelModality{bedrocktypes.ModelModalityText, bedrocktypes.ModelModalityImage, "SPEECH"}
+	claude := bedrockTestFoundationModel("anthropic.claude-sonnet-4-5-20250929-v1:0", "Anthropic", "Claude Sonnet 4.5")
+	driver := NewBedrockDriverWithClient(BedrockOptions{Region: "us-east-2"}, &fakeBedrockRuntime{}, &fakeBedrockModels{
+		foundation: &bedrock.ListFoundationModelsOutput{ModelSummaries: []bedrocktypes.FoundationModelSummary{catalogued, future, claude}},
+	})
+	models, err := driver.ListModels(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, model := range models {
+		tools := "unknown"
+		if model.ToolSupport != nil {
+			tools = fmt.Sprint(*model.ToolSupport)
+		}
+		got[model.ID] = strings.Join(*model.InputModalities, ",") + " -> " + strings.Join(*model.OutputModalities, ",") + " tools:" + tools
+	}
+	want := map[string]string{
+		"nvidia.nemotron-nano-12b-v2-vl-bf16":       "text,image -> text tools:unknown",
+		"nvidia.future-foundation-model":            "text,image,audio -> text tools:unknown",
+		"anthropic.claude-sonnet-4-5-20250929-v1:0": "text,image -> text tools:true",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("models = %v, want %v", got, want)
 	}
 }

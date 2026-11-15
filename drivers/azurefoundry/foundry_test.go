@@ -431,6 +431,18 @@ func TestListModelsFiltersDedicatedEndpointDeployments(t *testing.T) {
 	if image.Type == nil || *image.Type != modelTypeImage || *image.Owner != "OpenAI" || image.Name != "image" || *image.Description != "gpt-image-2.5-flare - 1" {
 		t.Fatalf("image model = %+v", image)
 	}
+	// The capability catalogue describes each source model: Claude takes images and calls tools, an image model
+	// answers with images, and Foundry keeps tools off for a partner model without a documented rule.
+	claude, future := models[0], models[2]
+	if strings.Join(*claude.InputModalities, ",") != "text,image" || strings.Join(*claude.OutputModalities, ",") != "text" || !*claude.ToolSupport {
+		t.Fatalf("claude model = %+v", claude)
+	}
+	if strings.Join(*image.OutputModalities, ",") != "image" || *image.ToolSupport {
+		t.Fatalf("image model = %+v", image)
+	}
+	if strings.Join(*future.InputModalities, ",") != "text" || *future.ToolSupport {
+		t.Fatalf("future model = %+v", future)
+	}
 }
 
 func TestListModelsFollowsNextLinkOnTheSameHostOnly(t *testing.T) {

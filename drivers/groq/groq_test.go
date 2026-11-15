@@ -172,6 +172,10 @@ func TestGroqListModelsLeavesOutSpeechAndEmbeddings(t *testing.T) {
 	if *models[0].Owner != "Meta" || models[0].Provider != "groq" {
 		t.Fatalf("model = %+v", models[0])
 	}
+	// Modalities and tool support come from the capability catalogue.
+	if gptOSS := models[1]; strings.Join(*gptOSS.InputModalities, ",") != "text" || !*gptOSS.ToolSupport || *gptOSS.IsMultimodal {
+		t.Fatalf("gpt-oss = %+v", gptOSS)
+	}
 	if err := driver.ValidateConnection(context.Background()); err != nil {
 		t.Fatal(err)
 	}

@@ -35,6 +35,8 @@ workflow enforces a clean `gofmt -l .`.
 common/                 shared public types, options, errors (package common)
 core/                   driver-contract helpers: lifecycle, streams, HTTP/SSE/JSON,
                         option accessors, conversation-retention, version parsing
+capability/             model capability catalogue (port of llumiverse's capability tables,
+                        model directory and context windows); listings use it
 drivers/openai          OpenAI + OpenAI-compatible driver (Responses API)
 drivers/anthropic       thin shell over the shared Claude implementation
 drivers/bedrock         AWS Bedrock driver (Converse / ConverseStream / InvokeModel)
@@ -100,8 +102,10 @@ llumiverse-go follows the behaviour of the TypeScript llumiverse `main`, not onl
    (core, Claude, OpenAI, Bedrock, Vertex AI, Azure):
    - **port** when it changes behaviour llumiverse-go has;
    - **covered** when Go already does it (often through the generated wire types);
-   - **skip** for TS tooling, dependency bumps, providers Go lacks, catalogue metadata and
+   - **skip** for TS tooling, dependency bumps, providers Go lacks, option metadata and
      logging. Check the "Known differences" list before calling something missed.
+   Catalogue changes (`common/src/capability*`, `model-directory.ts`, `options/context-windows.ts`,
+   `options/gemini-limits.ts`, `drivers/src/shared/model-listing.ts`) are ported to `capability/`.
 3. Run `scripts/sync-schema.sh <commit>` first, so the wire types match the target.
 4. Port oldest first within each area, one commit per change, referencing the llumiverse PR. Give
    each change an offline test that mirrors the TS test.
@@ -168,9 +172,13 @@ llumiverse-go follows the behaviour of the TypeScript llumiverse `main`, not onl
 3. Map provider errors through a `formatError` that produces a
    `*common.LlumiverseError` with a sensible `Retryable`.
 4. Put conversation retention in `conversation.go`; reuse `core` placeholders.
-5. Add a runnable `examples/<name>-*/main.go` and unit tests with fakes
+5. Fill `ListModels` from the catalogue as the TS driver does: `capability.ForModel(...).Apply`
+   for curated families, or `capability.ResolveListingMetadata` when the provider's own modalities
+   should describe unknown models; filter with `capability.IsEmbeddingModel` and
+   `IsDedicatedInferenceModel`. Provider rules (limits, efforts) go in `capability/directory.go`.
+6. Add a runnable `examples/<name>-*/main.go` and unit tests with fakes
    (`drivers/internal/fakehttp` serves canned HTTP responses and records requests).
-6. If it adds a public constructor/type, re-export it from the root `aliases.go`.
+7. If it adds a public constructor/type, re-export it from the root `aliases.go`.
 
 ## CI / .github
 

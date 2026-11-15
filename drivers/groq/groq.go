@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/common"
 	"github.com/vertesia/llumiverse-go/drivers/internal/chatcompat"
 	"github.com/vertesia/llumiverse-go/drivers/openai"
@@ -161,18 +162,21 @@ func (d *GroqDriver) ListModels(ctx context.Context, _ *common.ModelSearchPayloa
 	models := make([]common.AIModel, 0, len(response.Data))
 	for _, model := range response.Data {
 		id := strings.ToLower(model.ID)
-		if chatcompat.IsEmbeddingModelID(id) || whisperPattern.MatchString(id) || orpheusPattern.MatchString(id) {
+		if capability.IsEmbeddingModel(capability.Listing{ID: model.ID}, common.ProviderGroq) ||
+			whisperPattern.MatchString(id) || orpheusPattern.MatchString(id) {
 			continue
 		}
 		owner := model.OwnedBy
-		models = append(models, common.AIModel{
+		aiModel := common.AIModel{
 			ID:        model.ID,
 			Name:      model.ID,
 			Provider:  string(common.ProviderGroq),
 			Owner:     &owner,
 			Type:      ptr(wire.ModelTypeText),
 			CanStream: ptr(true),
-		})
+		}
+		capability.ForModel(model.ID, common.ProviderGroq).Apply(&aiModel)
+		models = append(models, aiModel)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
