@@ -1342,7 +1342,8 @@ func TestBedrockAdditionalFieldsAndErrorFormatting(t *testing.T) {
 		Model:        "mistral.large",
 		ModelOptions: map[string]any{"top_k": 40, "reasoning_effort": "medium"},
 	}, false)
-	if additional["top_k"] != 40 || additional["reasoning_effort"] != "medium" {
+	// Mistral Large reads neither field; see TestBedrockFamilyAdditionalFields.
+	if len(additional) != 0 {
 		t.Fatalf("non-Claude fields = %#v", additional)
 	}
 

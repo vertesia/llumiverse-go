@@ -786,11 +786,15 @@ func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOpt
 	if len(options.Tools) == 0 && bedrockMessagesContainToolBlocks(messages) {
 		messages = convertBedrockToolBlocksToText(messages)
 	}
+	system := prompt.System
+	if len(system) > 0 && bedrockFoldsSystemPrompt(options.Model) {
+		messages, system = foldBedrockSystemPrompt(messages, system), nil
+	}
 	input := &bedrockruntime.ConverseInput{
 		ModelId:         aws.String(options.Model),
 		Messages:        messages,
-		System:          prompt.System,
-		InferenceConfig: bedrockInferenceConfig(options.ModelOptions),
+		System:          system,
+		InferenceConfig: bedrockInferenceConfig(options.Model, options.ModelOptions),
 		RequestMetadata: options.Labels,
 		OutputConfig:    bedrockOutputConfig(options),
 		ServiceTier:     bedrockServiceTier(options.ModelOptions),
@@ -1417,16 +1421,20 @@ func stripBedrockToolCachePoints(tools []brtypes.Tool) []brtypes.Tool {
 
 // bedrockInferenceConfig maps the generic model options (max_tokens,
 // temperature, top_p, stop_sequence) to a Converse InferenceConfiguration,
-// returning nil when none are set.
-func bedrockInferenceConfig(options map[string]any) *brtypes.InferenceConfiguration {
+// returning nil when none are set. DeepSeek accepts neither stop sequences nor
+// top_p, and other models get top_p only when temperature is unset.
+func bedrockInferenceConfig(model string, options map[string]any) *brtypes.InferenceConfiguration {
 	cfg := &brtypes.InferenceConfiguration{}
+	if strings.Contains(strings.ToLower(model), "deepseek") {
+		options = withoutBedrockOptions(options, "stop_sequence", "top_p")
+	}
 	if v := optionInt(options, "max_tokens"); v != nil {
 		cfg.MaxTokens = aws.Int32(int32(*v))
 	}
 	if v := optionFloat(options, "temperature"); v != nil {
 		cfg.Temperature = aws.Float32(float32(*v))
 	}
-	if v := optionFloat(options, "top_p"); v != nil {
+	if v := optionFloat(options, "top_p"); v != nil && cfg.Temperature == nil {
 		cfg.TopP = aws.Float32(float32(*v))
 	}
 	if stops := optionStringSlice(options, "stop_sequence"); len(stops) > 0 {
@@ -1441,17 +1449,21 @@ func bedrockInferenceConfig(options map[string]any) *brtypes.InferenceConfigurat
 // bedrockAdditionalFields assembles the AdditionalModelRequestFields document.
 // These carry model-specific knobs that Converse does not model directly: Claude
 // thinking/reasoning config (explicit budget vs. adaptive effort vs. disabled,
-// including the 128k output beta for claude-3-7-sonnet), top_k (when thinking is
-// off and the model permits it), and reasoning_effort for non-Claude models.
+// including the 128k output beta for claude-3-7-sonnet) and top_k (when thinking
+// is off and the model permits it). Other families get their own fields from
+// bedrockFamilyFields.
 func bedrockAdditionalFields(options ExecutionOptions, disableClaudeThinking bool) map[string]any {
-	out := map[string]any{}
 	claude := strings.Contains(strings.ToLower(options.Model), "claude")
+	if !claude {
+		return bedrockFamilyFields(options)
+	}
+	out := map[string]any{}
 	thinkingActive := false
 	if disableClaudeThinking {
 		// A forced tool turn: Bedrock permits only auto/none tool choice while
 		// thinking is active, so this turn runs without thinking or effort.
 		out["reasoning_config"] = map[string]any{"type": "disabled"}
-	} else if claude && isClaudeVersionGTE(options.Model, 3, 7) {
+	} else if isClaudeVersionGTE(options.Model, 3, 7) {
 		// Claude thinking fields are passed as additional model request fields in
 		// Bedrock Converse, not as normal inference config fields. Explicit budgets
 		// take priority over adaptive effort-based thinking.
@@ -1483,9 +1495,6 @@ func bedrockAdditionalFields(options ExecutionOptions, disableClaudeThinking boo
 	}
 	if v := optionInt(options.ModelOptions, "top_k"); v != nil && !thinkingActive && !claudeHasSamplingParameterRestriction(options.Model) {
 		out["top_k"] = *v
-	}
-	if v, ok := options.ModelOptions["reasoning_effort"].(string); ok && !claude {
-		out["reasoning_effort"] = v
 	}
 	return out
 }
