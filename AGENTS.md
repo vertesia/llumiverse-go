@@ -42,7 +42,7 @@ drivers/vertexai        Gemini Enterprise Agent Platform driver (Gemini/Imagen/C
 drivers/azurefoundry    Microsoft Foundry and Azure OpenAI drivers
 drivers/internal/claude shared Claude prompt/stream/conversation logic
 wire/                   JSON shapes generated from schema/ (package wire) + helpers
-schema/                 llumiverse JSON Schema document, copied from the TS llumiverse
+schema/                 llumiverse JSON Schema document (SOURCE) and behaviour parity point (LLUMIVERSE_PARITY)
 gen/                    separate module: the wiregen command and the pinned oapi-codegen
 scripts/                sync-schema.sh
 examples/               runnable per-provider examples
@@ -78,6 +78,26 @@ serialize the same JSON.
   (`z.infer`) is the generated `wire` type in Go too, aliased from `common`. Types
   the TS client writes by hand because they carry behavior (`Driver`, `DataSource`,
   streams, `ExecutionOptions`) stay hand-written in `common`.
+
+## Keeping up with llumiverse
+
+llumiverse-go follows the behaviour of the TypeScript llumiverse `main`, not only its schema.
+`schema/LLUMIVERSE_PARITY` names the llumiverse commit the drivers and core last matched.
+`docs/llumiverse-parity.md` records every llumiverse commit since the port, with its decision
+(ported / covered / skip) and reason, plus the known differences that remain. To catch up:
+
+1. In a llumiverse checkout, list the new commits:
+   `git log --reverse --no-merges <LLUMIVERSE_PARITY commit>..origin/main -- drivers/src core/src common/src`.
+2. Add a section to `docs/llumiverse-parity.md` for the new range, and classify each commit by area
+   (core, Claude, OpenAI, Bedrock, Vertex AI, Azure):
+   - **port** when it changes behaviour llumiverse-go has;
+   - **covered** when Go already does it (often through the generated wire types);
+   - **skip** for TS tooling, dependency bumps, providers Go lacks, catalogue metadata and
+     logging. Check the "Known differences" list before calling something missed.
+3. Run `scripts/sync-schema.sh <commit>` first, so the wire types match the target.
+4. Port oldest first within each area, one commit per change, referencing the llumiverse PR. Give
+   each change an offline test that mirrors the TS test.
+5. When no **port** row is left, write the new commit to `schema/LLUMIVERSE_PARITY`.
 
 ## Conventions
 

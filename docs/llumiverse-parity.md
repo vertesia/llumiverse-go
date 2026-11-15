@@ -3,7 +3,8 @@
 This file tracks how llumiverse-go follows the TypeScript
 [llumiverse](https://github.com/vertesia/llumiverse). It lists every llumiverse commit that touched
 `drivers/src`, `core/src` or `common/src` since the Go port, with what llumiverse-go did about it.
-The commit llumiverse-go now matches is in [`LLUMIVERSE_PARITY`](../LLUMIVERSE_PARITY).
+The commit llumiverse-go now matches is in [`schema/LLUMIVERSE_PARITY`](../schema/LLUMIVERSE_PARITY);
+`AGENTS.md` ("Keeping up with llumiverse") describes the next catch-up.
 
 ## Baseline
 
@@ -29,6 +30,41 @@ The range is `git log --no-merges 51e6007..73dfc90 -- drivers/src core/src commo
   catalogue metadata llumiverse-go does not carry). The reason says which.
 
 A commit that spans several areas appears in each area's table with that area's part.
+
+## Result (parity point `73dfc90`)
+
+Of the 140 commits, 93 were ported in at least one area, 12 were already covered, and 35 were
+skipped. Counted per area row (229 rows), the result is 146 ported, 32 covered and 51 skipped.
+
+### Known differences that remain
+
+These are deliberate or need a design choice. They are listed here so the next catch-up does not
+mistake them for missed commits.
+
+- **No logger.** The Go drivers do not log, so log-only changes (refusal and content-filter logs,
+  option warnings, log levels) are skipped.
+- **No capability catalogue or option metadata**, and no result-schema validation. Catalogue rows
+  are skipped. Routing behaviour that the catalogue drives is ported inside each driver, by model
+  family and version.
+- **Bedrock Mantle is not a provider.** Callers with a Bedrock API key can point the
+  OpenAI-compatible driver at its endpoint.
+- **Claude on Bedrock:** application inference profiles, custom models and provisioned throughput
+  stay on Converse. Resolving their base model needs lookups the Go client does not make.
+- **Gemini context caches:** no pluggable cross-process coordinator, and a fixed 30 s cooldown after
+  a 429. Core's HTTP status error does not carry `Retry-After`.
+- **Transport:** `BodyTimeout` bounds the whole request, where the TS client bounds the gap between
+  body chunks. `drivers/openai` keeps the openai-go default retries.
+- **Azure:** the legacy dated Azure OpenAI API and the implicit `DefaultAzureCredential` fallback
+  are not ported. The library takes explicit credentials only.
+- **Not ported from older TS behaviour, outside the triaged range:**
+  - Gemini `safetySettings` defaults.
+  - Imagen pinned to `us-central1`.
+  - Excluding "ultra" models from structured output.
+  - Reconnecting a dropped long-decode continuation stream.
+  - Claude JSON prefill on Converse.
+  - Some message-based retry heuristics, such as status codes that appear only in error text.
+- **Conversation turn counter:** Go keeps the conversation turn counter across turns where the TS
+  client resets it.
 
 
 ## Core and common
