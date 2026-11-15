@@ -179,6 +179,12 @@ type ExecutionOptions struct {
 	// OutputStorageURI is the provider output prefix for generated media (for
 	// example a gs:// prefix for Vertex video generation).
 	OutputStorageURI string
+	// StoreAudio is a runtime-only sink for a generated audio file. It must consume
+	// audio completely and return a durable object URI (never inline bytes or a
+	// signed download URL), which becomes the value of the audio result; metadata
+	// carries the file's media details (its Type and Value are unset). Drivers that
+	// return audio files fail the request when it is nil.
+	StoreAudio func(ctx context.Context, audio io.Reader, metadata AudioResult) (string, error)
 	// Compaction enables server-side compaction of a long conversation (Claude
 	// Messages API and OpenAI Responses API). Nil means no compaction.
 	Compaction *ConversationCompactionOptions

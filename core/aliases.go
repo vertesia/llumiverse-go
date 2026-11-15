@@ -21,6 +21,7 @@ type ExecutionTokenUsage = common.ExecutionTokenUsage
 type PromptCacheMode = common.PromptCacheMode
 type PromptCacheDiagnostic = common.PromptCacheDiagnostic
 type ToolUsage = common.ToolUsage
+type AudioResult = common.AudioResult
 type ConversationCompactionOptions = common.ConversationCompactionOptions
 type CompactConversationOptions = common.CompactConversationOptions
 type ResultValidationError = common.ResultValidationError

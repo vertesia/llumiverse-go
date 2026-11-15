@@ -6,15 +6,27 @@ import (
 )
 
 const (
-	ConversationImagePlaceholder     = "[Image removed from conversation history]"
-	ConversationDocumentPlaceholder  = "[Document removed from conversation history]"
-	ConversationVideoPlaceholder     = "[Video removed from conversation history]"
+	ConversationImagePlaceholder    = "[Image removed from conversation history]"
+	ConversationDocumentPlaceholder = "[Document removed from conversation history]"
+	ConversationVideoPlaceholder    = "[Video removed from conversation history]"
+	// ConversationAudioPlaceholder replaces inline audio in stored conversations. Unlike other media,
+	// audio is never kept in history whatever the retention options: drivers replace inline audio
+	// blocks (Gemini inlineData, OpenAI input_audio, Bedrock audio bytes) and drop generated audio
+	// data from assistant messages when they build the returned conversation. Durable file
+	// references (gs://, s3:// URIs) are kept.
+	ConversationAudioPlaceholder     = "[Audio file omitted from history]"
 	ConversationTextTruncatedMarker  = "\n\n[Content truncated - exceeded token limit]"
 	ConversationHeartbeatOpenTag     = "<heartbeat>"
 	ConversationHeartbeatCloseTag    = "</heartbeat>"
 	ConversationHeartbeatPlaceholder = "[Heartbeat removed from conversation history]"
 	ConversationCharsPerToken        = 4
 )
+
+// IsAudioMIMEType reports whether mimeType is an audio media type, the test the TS client applies
+// to inline data when it strips audio from conversation history.
+func IsAudioMIMEType(mimeType string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(mimeType)), "audio/")
+}
 
 // ShouldStripConversationMedia implements the TS client's media retention rule.
 func ShouldStripConversationMedia(turn int, keepForTurns *int) bool {

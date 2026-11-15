@@ -73,6 +73,23 @@ func TestConversationTruncationCutoffKeepsRecentMessages(t *testing.T) {
 	}
 }
 
+// The TS client strips inline data whose MIME type starts with audio/ from conversation history.
+func TestIsAudioMIMEType(t *testing.T) {
+	t.Parallel()
+
+	for mimeType, want := range map[string]bool{
+		"audio/wav":  true,
+		"Audio/MPEG": true,
+		"image/png":  false,
+		"video/mp4":  false,
+		"":           false,
+	} {
+		if got := IsAudioMIMEType(mimeType); got != want {
+			t.Fatalf("IsAudioMIMEType(%q) = %v, want %v", mimeType, got, want)
+		}
+	}
+}
+
 // Mirrors the TS client's "truncateLargeTextInConversation — surrogate safety" tests: Go strings
 // are UTF-8, so the boundary must not split a multi-byte sequence.
 func TestTruncateConversationTextKeepsValidUTF8(t *testing.T) {
