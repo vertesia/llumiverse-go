@@ -299,7 +299,7 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 		t.Fatalf("combined texts = %#v", texts)
 	}
 
-	state := buildOpenAIResponsesConversation([]responseItem{{"role": "user", "content": "question"}}, &Completion{
+	state := buildOpenAIResponsesConversation([]responseItem{{"role": "user", "content": "question"}}, nil, &Completion{
 		Result: []CompletionResult{common.NewJSONResult(map[string]any{"answer": "ok"})},
 		ToolUse: []ToolUse{{
 			ID:        "call_2",
@@ -401,14 +401,14 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 	}`), &response); err != nil {
 		t.Fatal(err)
 	}
-	completion := extractOpenAIResponseCompletion(&response)
+	completion := extractOpenAIResponseCompletion(&response, true)
 	if len(completion.Result) != 2 || completion.Result[1].Type() != ResultTypeImage || completion.Result[1].String() != "data:image/png;base64,aW1n" {
 		t.Fatalf("completion result = %#v", completion)
 	}
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ID != "call_1" {
 		t.Fatalf("tool use = %#v", completion.ToolUse)
 	}
-	if empty := extractOpenAIResponseCompletion(&responsesResponse{Status: "completed"}); len(empty.Result) != 1 || empty.Result[0].Type() != ResultTypeText || empty.Result[0].String() != "" {
+	if empty := extractOpenAIResponseCompletion(&responsesResponse{Status: "completed"}, true); len(empty.Result) != 1 || empty.Result[0].Type() != ResultTypeText || empty.Result[0].String() != "" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 	responseTools := openAIResponseTools([]ToolDefinition{{Name: "lookup", Description: ptr("Lookup"), InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}})
@@ -421,17 +421,19 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 	if role := openAIResponsesSystemRole("o3-mini"); role != "developer" {
 		t.Fatalf("o3 role = %s", role)
 	}
-	if got := openAIReasoningEffort("gpt-5-pro", "low"); got != "high" {
-		t.Fatalf("gpt-5-pro effort = %q", got)
+	for model, want := range map[string]bool{"o1": true, "o3-mini": true, "openai/o4-mini": true, "gpt-5": true, "gpt-5.6-sol": true, "gpt-6": true, "gpt-4.1": false, "gpt-4o": false, "pro1": false} {
+		if got := isOpenAIReasoningModel(model); got != want {
+			t.Fatalf("isOpenAIReasoningModel(%q) = %v", model, got)
+		}
 	}
-	if got := openAIReasoningEffort("gpt-5", "medium"); got != "medium" {
-		t.Fatalf("gpt-5 effort = %q", got)
+	if got := openAIReasoning(ExecutionOptions{Model: "gpt-4.1", ModelOptions: map[string]any{"effort": "max", "reasoning_effort": "low"}}); got["effort"] != "max" || got["summary"] != "auto" {
+		t.Fatalf("compatible effort = %#v", got)
 	}
-	if got := openAIReasoningEffort("gpt-4.1", "high"); got != "" {
-		t.Fatalf("non-reasoning effort = %q", got)
+	if got := openAIReasoning(ExecutionOptions{Model: "gpt-4.1"}); got != nil {
+		t.Fatalf("non-reasoning reasoning = %#v", got)
 	}
-	if got := openAIReasoningEffort("gpt-5", "invalid"); got != "" {
-		t.Fatalf("invalid effort = %q", got)
+	if got := openAIReasoning(ExecutionOptions{Model: "gpt-5.6", ModelOptions: map[string]any{"reasoning_context": "all_turns"}}); got["context"] != "all_turns" || got["effort"] != nil {
+		t.Fatalf("reasoning context = %#v", got)
 	}
 	if got := openAIImageDetail(ExecutionOptions{ModelOptions: map[string]any{"image_detail": "invalid"}}); got != "auto" {
 		t.Fatalf("image detail = %q", got)

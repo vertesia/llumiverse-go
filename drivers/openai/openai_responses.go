@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 
 	"github.com/vertesia/llumiverse-go/core"
@@ -158,13 +159,13 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, err
 	}
-	completion := extractOpenAIResponseCompletion(&response)
+	completion := extractOpenAIResponseCompletion(&response, openAIIncludeThoughts(options))
 	if options.IncludeOriginalResponse {
 		var original any
 		_ = json.Unmarshal(raw, &original)
 		completion.OriginalResponse = original
 	}
-	completion.Conversation = buildOpenAIResponsesConversation(input, completion, options)
+	completion.Conversation = buildOpenAIResponsesConversation(input, rawOutputItems(response.Output), completion, options)
 	return completion, nil
 }
 
@@ -184,9 +185,10 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 	}
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: prompt}
+	state := &openAIResponsesStreamState{includeThoughts: openAIIncludeThoughts(options)}
 	go func() {
 		defer close(ch)
-		state := openAIResponsesStreamState{tools: map[string]openAIResponsesStreamTool{}}
+		state.tools = map[string]openAIResponsesStreamTool{}
 		err := core.ScanSSE(res.Body, func(event core.SSEEvent) error {
 			if event.Data == "" || event.Data == "[DONE]" {
 				return nil
@@ -216,7 +218,11 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 		}
 	}()
 	return newChannelStreamWithFinalizer(ch, completion, res.Body.Close, func(resp *ExecutionResponse) {
-		resp.Conversation = buildOpenAIResponsesConversation(input, &resp.Completion, options)
+		var output []responseItem
+		if state.final != nil {
+			output = rawOutputItems(state.final.Output)
+		}
+		resp.Conversation = buildOpenAIResponsesConversation(input, output, &resp.Completion, options)
 	}), nil
 }
 
@@ -248,8 +254,10 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 			payload["top_p"] = *v
 		}
 	}
-	if effort := openAIReasoningEffort(options.Model, optionString(options.ModelOptions, "effort", "reasoning_effort")); effort != "" {
-		payload["reasoning"] = map[string]any{"effort": effort}
+	if reasoning := openAIReasoning(options); reasoning != nil {
+		payload["reasoning"] = reasoning
+		// Encrypted reasoning items let the next turn continue the same reasoning.
+		payload["include"] = []string{"reasoning.encrypted_content"}
 	}
 	if len(options.Labels) > 0 {
 		payload["metadata"] = options.Labels
@@ -361,6 +369,17 @@ func (item *responsesOutputItem) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// rawOutputItems returns the output items in their JSON shape.
+func rawOutputItems(output []responsesOutputItem) []responseItem {
+	items := make([]responseItem, 0, len(output))
+	for _, item := range output {
+		if item.Raw != nil {
+			items = append(items, item.Raw)
+		}
+	}
+	return items
+}
+
 // responsesOutputContent is one content part of an output message or reasoning summary.
 type responsesOutputContent struct {
 	Type    string `json:"type"`
@@ -389,11 +408,11 @@ type responsesInputTokenInfo struct {
 
 // extractOpenAIResponseCompletion maps a Responses output into a Completion,
 // collecting text/image results, tool uses, usage, and a normalized finish reason.
-func extractOpenAIResponseCompletion(response *responsesResponse) *Completion {
+func extractOpenAIResponseCompletion(response *responsesResponse, includeThoughts bool) *Completion {
 	if response == nil {
 		return &Completion{Result: []CompletionResult{newTextResult("")}}
 	}
-	result := openAIResponseResults(response.Output)
+	result := openAIResponseResults(response.Output, includeThoughts)
 	tools := openAIResponseToolUses(response.Output)
 	completion := &Completion{
 		Result:       result,
@@ -407,12 +426,22 @@ func extractOpenAIResponseCompletion(response *responsesResponse) *Completion {
 	return completion
 }
 
-// openAIResponseResults extracts text and generated-image results from Responses
-// output items, wrapping bare base64 image data in a PNG data URL.
-func openAIResponseResults(output []responsesOutputItem) []CompletionResult {
+// openAIResponseResults extracts reasoning summaries (as thoughts), text and
+// generated-image results from Responses output items, in order, wrapping bare
+// base64 image data in a PNG data URL.
+func openAIResponseResults(output []responsesOutputItem, includeThoughts bool) []CompletionResult {
 	results := []CompletionResult{}
 	for _, item := range output {
 		switch item.Type {
+		case "reasoning":
+			if !includeThoughts {
+				continue
+			}
+			for _, summary := range item.Summary {
+				if summary.Type == "summary_text" && summary.Text != "" {
+					results = append(results, newThoughtsResult(summary.Text))
+				}
+			}
 		case "message":
 			for _, part := range item.Content {
 				if part.Type == "output_text" && part.Text != "" {
@@ -530,9 +559,12 @@ type openAIResponsesStreamTool struct {
 // openAIResponsesStreamState accumulates per-stream tool metadata, keyed by both
 // item ID and call ID, so argument-delta events resolve to the right tool call.
 type openAIResponsesStreamState struct {
-	tools         map[string]openAIResponsesStreamTool
-	hasTextDeltas bool
-	refusal       string
+	tools           map[string]openAIResponsesStreamTool
+	hasTextDeltas   bool
+	refusal         string
+	includeThoughts bool
+	// final is the terminal response, whose output items become the conversation.
+	final *responsesResponse
 }
 
 // chunk advances the streaming state machine for one Responses event, emitting a
@@ -581,6 +613,10 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (Completi
 		if !s.hasTextDeltas && event.Text != "" {
 			return CompletionChunk{Result: []CompletionResult{newTextResult(event.Text)}}, nil
 		}
+	case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
+		if s.includeThoughts && event.Delta != "" {
+			return CompletionChunk{Result: []CompletionResult{newThoughtsResult(event.Delta)}}, nil
+		}
 	case "response.refusal.delta":
 		s.refusal += event.Delta
 	case "response.refusal.done":
@@ -589,7 +625,8 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (Completi
 			refusal = s.refusal
 		}
 		return CompletionChunk{}, fmt.Errorf("[OpenAI] Model refused: %s", refusal)
-	case "response.error":
+	case "error", "response.error":
+		// OpenAI sends "error"; some compatible endpoints still send the legacy alias.
 		message := "[OpenAI Responses API] " + event.Message
 		if event.Code != "" {
 			message += " (" + event.Code + ")"
@@ -599,6 +636,7 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (Completi
 		if event.Response == nil {
 			return CompletionChunk{}, nil
 		}
+		s.final = event.Response
 		tools := openAIResponseToolUses(event.Response.Output)
 		return CompletionChunk{FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0), TokenUsage: openAIResponseUsage(event.Response.Usage)}, nil
 	}
@@ -619,28 +657,40 @@ func openAIResponsesSystemRole(model string) string {
 	return "system"
 }
 
-// isOpenAIReasoningModel detects reasoning models (o1/o3/o4/gpt-5) by name,
-// which disables temperature/top_p and enables reasoning effort.
+var openAIReasoningModelPattern = regexp.MustCompile(`(?:^|[/:.])o(?:1|3|4)(?:-|$)`)
+
+// isOpenAIReasoningModel detects o1/o3/o4 and GPT-5+ models, which take
+// reasoning and reject temperature and top_p.
 func isOpenAIReasoningModel(model string) bool {
-	normalized := strings.ToLower(model)
-	return strings.Contains(normalized, "o1") || strings.Contains(normalized, "o3") || strings.Contains(normalized, "o4") || strings.Contains(normalized, "gpt-5")
+	return openAIReasoningModelPattern.MatchString(strings.ToLower(model)) || isOpenAIGptVersionGTE(model, 5, 0)
 }
 
-// openAIReasoningEffort validates the requested effort for reasoning models,
-// forcing "high" for gpt-5-pro and returning "" when effort does not apply.
-func openAIReasoningEffort(model string, effort string) string {
-	if effort == "" || !isOpenAIReasoningModel(model) {
-		return ""
+// openAIReasoning builds the reasoning request for reasoning models or when the
+// caller sets an effort or reasoning context. Effort (or its reasoning_effort
+// alias) is passed through unchanged so the provider validates it, which also
+// serves OpenAI-compatible endpoints whose models are not known here. Summaries
+// are always requested, for the thoughts projection.
+func openAIReasoning(options ExecutionOptions) map[string]any {
+	effort := optionString(options.ModelOptions, "effort", "reasoning_effort")
+	context := optionString(options.ModelOptions, "reasoning_context")
+	if effort == "" && context == "" && !isOpenAIReasoningModel(options.Model) {
+		return nil
 	}
-	if strings.HasPrefix(strings.ToLower(shortResourceName(model)), "gpt-5-pro") {
-		return "high"
+	reasoning := map[string]any{"summary": "auto"}
+	if effort != "" {
+		reasoning["effort"] = effort
 	}
-	switch effort {
-	case "low", "medium", "high":
-		return effort
-	default:
-		return ""
+	if context != "" {
+		reasoning["context"] = context
 	}
+	return reasoning
+}
+
+// openAIIncludeThoughts reports whether reasoning is returned as thoughts
+// (unless include_thoughts is false).
+func openAIIncludeThoughts(options ExecutionOptions) bool {
+	v := optionBoolPtr(options.ModelOptions, "include_thoughts")
+	return v == nil || *v
 }
 
 // openAIImageDetail returns the image_detail option; OpenAI accepts only low,

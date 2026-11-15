@@ -175,25 +175,43 @@ func openAIResponsesInput(conversation any, prompt []responseItem, hasTools bool
 	return out
 }
 
-// buildOpenAIResponsesConversation appends the completion's assistant text and
-// tool calls to the request input, increments the turn, and applies media and
-// heartbeat stripping retention rules to produce the next conversation state.
-func buildOpenAIResponsesConversation(input []responseItem, completion *Completion, options ExecutionOptions) openAIResponsesConversationState {
-	out := make([]responseItem, 0, len(input)+1+len(completion.ToolUse))
+// buildOpenAIResponsesConversation appends the response's output items to the
+// request input, so reasoning (with its encrypted content), image generation
+// calls and compaction items are replayed as the API returned them. Without
+// output items it falls back to the completion's text and tool calls. It then
+// increments the turn and applies the retention rules.
+func buildOpenAIResponsesConversation(input []responseItem, output []responseItem, completion *Completion, options ExecutionOptions) openAIResponsesConversationState {
+	out := make([]responseItem, 0, len(input)+len(output)+1)
 	out = append(out, input...)
-	if text := completionResultsToText(completion.Result); text != "" {
-		out = append(out, responseItem{"type": "message", "role": "assistant", "content": text})
-	}
-	for _, tool := range completion.ToolUse {
-		data, _ := json.Marshal(tool.ToolInput)
-		out = append(out, responseItem{"type": "function_call", "call_id": tool.ID, "name": tool.ToolName, "arguments": string(data)})
+	if len(output) > 0 {
+		out = append(out, output...)
+	} else {
+		if text := completionResultsToText(completion.Result); text != "" {
+			out = append(out, responseItem{"type": "message", "role": "assistant", "content": text})
+		}
+		for _, tool := range completion.ToolUse {
+			data, _ := json.Marshal(tool.ToolInput)
+			out = append(out, responseItem{"type": "function_call", "call_id": tool.ID, "name": tool.ToolName, "arguments": string(data)})
+		}
 	}
 	_, turn, _ := openAIResponsesConversation(options.Conversation)
-	turn++
+	return finalizeOpenAIResponsesItems(out, turn+1, options)
+}
+
+// finalizeOpenAIResponsesItems applies the retention rules for the given turn.
+// Expired generated images are replaced by a reference to the stored item.
+func finalizeOpenAIResponsesItems(items []responseItem, turn int, options ExecutionOptions) openAIResponsesConversationState {
 	stripMedia := shouldStripConversationMedia(turn, options.StripImagesAfterTurns)
 	stripHeartbeats := shouldStripConversationHeartbeats(turn, options.StripHeartbeatsAfterTurns)
+	if stripMedia {
+		for i, item := range items {
+			if id := stringValue(item["id"]); itemType(item) == "image_generation_call" && id != "" {
+				items[i] = responseItem{"type": "item_reference", "id": id}
+			}
+		}
+	}
 	return openAIResponsesConversationState{
-		Items: processOpenAIResponsesItemsForConversation(out, options, stripMedia, stripHeartbeats),
+		Items: processOpenAIResponsesItemsForConversation(items, options, stripMedia, stripHeartbeats),
 		Turn:  turn,
 	}
 }
