@@ -53,7 +53,7 @@ func executeWithPrompt(ctx context.Context, driver Driver, segments []PromptSegm
 	}
 	return &ExecutionResponse{
 		Completion:    *completion,
-		Prompt:        prompt,
+		Prompt:        debugPrompt(driver, prompt),
 		ExecutionTime: time.Since(start),
 	}, nil
 }
@@ -86,8 +86,11 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 	if stream == nil {
 		return nil, errors.New("driver returned nil stream")
 	}
-	if completion := stream.Completion(); completion != nil && completion.Prompt == nil {
-		completion.Prompt = prompt
+	if completion := stream.Completion(); completion != nil {
+		if completion.Prompt == nil {
+			completion.Prompt = prompt
+		}
+		completion.Prompt = debugPrompt(driver, completion.Prompt)
 	}
 	return stream, nil
 }
