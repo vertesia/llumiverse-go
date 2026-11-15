@@ -25,6 +25,7 @@ func (d *VertexAIDriver) requestGemini(ctx context.Context, prompt geminiPrompt,
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
 	}
+	addGeminiServiceTierHeaders(headers, options.ModelOptions)
 	var response geminiResponse
 	if err := doJSON(ctx, d.httpClient(options.HTTPTimeout), http.MethodPost, endpoint, headers, d.geminiPayload(prompt, options), &response); err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
@@ -60,6 +61,7 @@ func (d *VertexAIDriver) requestGeminiStream(ctx context.Context, prompt geminiP
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "stream")
 	}
+	addGeminiServiceTierHeaders(headers, options.ModelOptions)
 	delete(payload, "model")
 	body, err := postSSE(ctx, d.httpClient(options.HTTPTimeout), endpoint, headers, payload)
 	if err != nil {

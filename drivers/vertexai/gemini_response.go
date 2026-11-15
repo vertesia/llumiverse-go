@@ -267,6 +267,27 @@ func normalizeVertexServiceTier(trafficType string) string {
 	}
 }
 
+// geminiServiceTier resolves the requested service tier: service_tier, else the
+// deprecated flex flag.
+func geminiServiceTier(modelOptions map[string]any) string {
+	if tier := optionString(modelOptions, "service_tier"); tier != "" {
+		return tier
+	}
+	if flex, _ := modelOptions["flex"].(bool); flex {
+		return "flex"
+	}
+	return ""
+}
+
+// addGeminiServiceTierHeaders requests a shared service tier (flex, priority)
+// through the Vertex request-type headers. The default tier sends none.
+func addGeminiServiceTierHeaders(headers map[string]string, modelOptions map[string]any) {
+	if tier := geminiServiceTier(modelOptions); tier != "" && tier != "default" {
+		headers["X-Vertex-AI-LLM-Request-Type"] = "shared"
+		headers["X-Vertex-AI-LLM-Shared-Request-Type"] = tier
+	}
+}
+
 // appendGeminiStreamParts accumulates streamed parts into the model turn kept in
 // the conversation: adjacent text deltas of the same kind merge, while signed
 // parts (thought signatures) stay separate so each signature keeps its own part.
