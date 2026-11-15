@@ -31,6 +31,11 @@ application architecture.
 | Gemini Enterprise Agent Platform¹ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (Imagen / Gemini) |
 | Microsoft Foundry / Azure OpenAI | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (gpt-image / dall-e) |
 | AWS Bedrock Mantle² | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | — |
+| Groq (Chat Completions) | ✅ | ✅ | ✅ | ✅ | ✅³ | — | — |
+| Mistral AI | ✅ | ✅ | ✅ | ✅ | ✅³ | ✅ | — |
+| Together AI (Chat Completions) | ✅ | ✅ | ✅ | ✅ | ✅³ | ✅ | — |
+| OpenRouter (Chat Completions) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ (text / image / audio / video) | — |
+| xAI (Responses API) | ✅ | ✅ | ✅ | ✅ | ✅ | — | ✅ (Grok image models) |
 
 ¹ Formerly Vertex AI. The package keeps the `vertexai` provider and package
 names for compatibility, and also serves Claude partner models on the platform.
@@ -38,6 +43,10 @@ names for compatibility, and also serves Claude partner models on the platform.
 ² The Bedrock endpoint that serves models on the OpenAI Responses, Chat
 Completions and Anthropic Messages APIs; the driver picks the protocol by model
 family.
+
+³ The result schema is sent as a prompt instruction (on Groq, gpt-oss and Qwen
+3.8+ also get native Structured Outputs) and every result is validated against
+it.
 
 ## Requirements
 
@@ -90,6 +99,13 @@ bedrockDriver, _ := llumiverse.NewBedrockDriver(context.Background(), llumiverse
 mantleDriver, _ := llumiverse.NewBedrockMantleDriver(context.Background(), llumiverse.BedrockMantleOptions{
     Region: "us-west-2",
 })
+
+// Groq, Mistral AI, Together AI, OpenRouter and xAI take an API key
+groqDriver, _ := llumiverse.NewGroqDriver(llumiverse.GroqOptions{APIKey: os.Getenv("GROQ_API_KEY")})
+mistralDriver, _ := llumiverse.NewMistralDriver(llumiverse.MistralOptions{APIKey: os.Getenv("MISTRAL_API_KEY")})
+togetherDriver, _ := llumiverse.NewTogetherAIDriver(llumiverse.TogetherAIOptions{APIKey: os.Getenv("TOGETHER_API_KEY")})
+openRouterDriver, _ := llumiverse.NewOpenRouterDriver(llumiverse.OpenRouterOptions{APIKey: os.Getenv("OPENROUTER_API_KEY")})
+xaiDriver, _ := llumiverse.NewXAIDriver(llumiverse.XAIOptions{APIKey: os.Getenv("XAI_API_KEY")})
 
 // Gemini Enterprise Agent Platform (uses Application Default Credentials)
 vertexDriver, _ := llumiverse.NewVertexAIDriver(llumiverse.VertexAIOptions{
@@ -307,6 +323,11 @@ drivers/bedrock         AWS Bedrock driver
 drivers/bedrockmantle   AWS Bedrock Mantle driver
 drivers/vertexai        Gemini Enterprise Agent Platform driver
 drivers/azurefoundry    Microsoft Foundry and Azure OpenAI drivers
+drivers/groq            Groq driver
+drivers/mistral         Mistral AI driver
+drivers/togetherai      Together AI driver
+drivers/openrouter      OpenRouter driver
+drivers/xai             xAI driver
 drivers/internal/claude shared Claude prompt/stream/conversation logic
 examples/               runnable usage examples
 ```
@@ -323,6 +344,7 @@ go run ./examples/vertexai-gemini
 go run ./examples/bedrock-embeddings
 go run ./examples/bedrock-mantle-chat
 go run ./examples/azurefoundry-chat
+go run ./examples/provider-chat -provider groq
 ```
 
 ## Tests

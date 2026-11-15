@@ -9,8 +9,13 @@ import (
 	azuredriver "github.com/vertesia/llumiverse-go/drivers/azurefoundry"
 	bedrockdriver "github.com/vertesia/llumiverse-go/drivers/bedrock"
 	mantledriver "github.com/vertesia/llumiverse-go/drivers/bedrockmantle"
+	groqdriver "github.com/vertesia/llumiverse-go/drivers/groq"
+	mistraldriver "github.com/vertesia/llumiverse-go/drivers/mistral"
 	openaidriver "github.com/vertesia/llumiverse-go/drivers/openai"
+	openrouterdriver "github.com/vertesia/llumiverse-go/drivers/openrouter"
+	togetherdriver "github.com/vertesia/llumiverse-go/drivers/togetherai"
 	vertexdriver "github.com/vertesia/llumiverse-go/drivers/vertexai"
+	xaidriver "github.com/vertesia/llumiverse-go/drivers/xai"
 )
 
 type Provider = common.Provider
@@ -80,6 +85,16 @@ type VertexAIOptions = vertexdriver.VertexAIOptions
 type VertexAIDriver = vertexdriver.VertexAIDriver
 type BedrockMantleOptions = mantledriver.BedrockMantleOptions
 type BedrockMantleDriver = mantledriver.BedrockMantleDriver
+type GroqOptions = groqdriver.GroqOptions
+type GroqDriver = groqdriver.GroqDriver
+type MistralOptions = mistraldriver.MistralOptions
+type MistralDriver = mistraldriver.MistralDriver
+type OpenRouterOptions = openrouterdriver.OpenRouterOptions
+type OpenRouterDriver = openrouterdriver.OpenRouterDriver
+type TogetherAIOptions = togetherdriver.TogetherAIOptions
+type TogetherAIDriver = togetherdriver.TogetherAIDriver
+type XAIOptions = xaidriver.XAIOptions
+type XAIDriver = xaidriver.XAIDriver
 type AzureFoundryOptions = azuredriver.AzureFoundryOptions
 type AzureFoundryDriver = azuredriver.AzureFoundryDriver
 type AzureOpenAIOptions = azuredriver.AzureOpenAIOptions
@@ -93,6 +108,11 @@ const (
 	ProviderVertexAI         = common.ProviderVertexAI
 	ProviderBedrock          = common.ProviderBedrock
 	ProviderBedrockMantle    = common.ProviderBedrockMantle
+	ProviderGroq             = common.ProviderGroq
+	ProviderMistralAI        = common.ProviderMistralAI
+	ProviderOpenRouter       = common.ProviderOpenRouter
+	ProviderTogetherAI       = common.ProviderTogetherAI
+	ProviderXAI              = common.ProviderXAI
 	ProviderAzureFoundry     = common.ProviderAzureFoundry
 	ProviderAzureOpenAI      = common.ProviderAzureOpenAI
 
@@ -184,6 +204,31 @@ func NewBedrockDriverWithClient(options BedrockOptions, runtime BedrockRuntimeAP
 // NewBedrockMantleDriver creates an AWS Bedrock Mantle driver.
 func NewBedrockMantleDriver(ctx context.Context, options BedrockMantleOptions) (*BedrockMantleDriver, error) {
 	return mantledriver.NewBedrockMantleDriver(ctx, options)
+}
+
+// NewGroqDriver creates a Groq driver.
+func NewGroqDriver(options GroqOptions) (*GroqDriver, error) {
+	return groqdriver.NewGroqDriver(options)
+}
+
+// NewMistralDriver creates a Mistral AI driver.
+func NewMistralDriver(options MistralOptions) (*MistralDriver, error) {
+	return mistraldriver.NewMistralDriver(options)
+}
+
+// NewOpenRouterDriver creates an OpenRouter driver.
+func NewOpenRouterDriver(options OpenRouterOptions) (*OpenRouterDriver, error) {
+	return openrouterdriver.NewOpenRouterDriver(options)
+}
+
+// NewTogetherAIDriver creates a Together AI driver.
+func NewTogetherAIDriver(options TogetherAIOptions) (*TogetherAIDriver, error) {
+	return togetherdriver.NewTogetherAIDriver(options)
+}
+
+// NewXAIDriver creates an xAI driver.
+func NewXAIDriver(options XAIOptions) (*XAIDriver, error) {
+	return xaidriver.NewXAIDriver(options)
 }
 
 // NewVertexAIDriver creates a Gemini Enterprise Agent Platform driver.

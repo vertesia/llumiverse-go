@@ -157,6 +157,32 @@ func openAIUsage(prompt, completion, total, cached int64) *ExecutionTokenUsage {
 // dedicated or legacy endpoints rather than text generation.
 var openAIUnsupportedEndpointPattern = regexp.MustCompile(`(?:^|[-_.:/])(?:embed|embeddings?|whisper|transcribe|audio|moderation|tts|realtime|babbage|davinci|computer[-_.:]use|sora)(?:[-_.:/]|$)`)
 
+// APIRequestOptions describes a request sent with DoAPIRequest.
+type APIRequestOptions struct {
+	// Model and Operation label errors.
+	Model     string
+	Operation string
+	// Query is added to the request URL.
+	Query map[string]string
+	// HTTPTimeout applies per-request timeouts.
+	HTTPTimeout HTTPTimeoutOptions
+}
+
+// DoAPIRequest sends a JSON request to a provider endpoint the shared drivers do not cover (model catalogues,
+// image generation, embeddings in another shape), with the driver's credentials, headers, retries and error
+// formatting. path is relative to the endpoint ("../v2/models" leaves its version). out receives the decoded
+// JSON body, or the raw response when it is a **http.Response (the caller closes its body).
+func (d *OpenAICompatibleDriver) DoAPIRequest(ctx context.Context, method, path string, body, out any, request APIRequestOptions) error {
+	opts := d.requestOptions(request.HTTPTimeout)
+	for key, value := range request.Query {
+		opts = append(opts, option.WithQuery(key, value))
+	}
+	if err := d.sdk.Execute(ctx, method, path, body, out, opts...); err != nil {
+		return d.formatError(err, request.Model, request.Operation)
+	}
+	return nil
+}
+
 // ListModels returns the endpoint's available models sorted by ID, marking
 // likely non-tool models as lacking tool support and normalizing the "system"
 // owner to "openai" for first-party OpenAI.

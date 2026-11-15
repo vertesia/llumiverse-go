@@ -49,6 +49,11 @@ const (
 	ProviderVertexAI         = common.ProviderVertexAI
 	ProviderBedrock          = common.ProviderBedrock
 	ProviderBedrockMantle    = common.ProviderBedrockMantle
+	ProviderGroq             = common.ProviderGroq
+	ProviderMistralAI        = common.ProviderMistralAI
+	ProviderOpenRouter       = common.ProviderOpenRouter
+	ProviderTogetherAI       = common.ProviderTogetherAI
+	ProviderXAI              = common.ProviderXAI
 	ProviderAzureFoundry     = common.ProviderAzureFoundry
 	ProviderAzureOpenAI      = common.ProviderAzureOpenAI
 
