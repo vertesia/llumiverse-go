@@ -9,6 +9,8 @@ type Provider = common.Provider
 type DriverOptions = common.DriverOptions
 type HTTPTimeoutOptions = common.HTTPTimeoutOptions
 type ExecutionOptions = common.ExecutionOptions
+type CompactConversationOptions = common.CompactConversationOptions
+type ConversationCompactionOptions = common.ConversationCompactionOptions
 type PromptSegment = common.PromptSegment
 type DataSource = common.DataSource
 type BytesDataSource = common.BytesDataSource
@@ -47,45 +49,34 @@ const (
 )
 
 var (
-	executeWithPrompt              = core.ExecuteWithPrompt
-	streamWithPrompt               = core.StreamWithPrompt
-	doJSON                         = core.DoJSON
-	joinEndpoint                   = core.JoinEndpoint
-	postSSE                        = core.PostSSE
-	scanSSE                        = core.ScanSSE
-	newChannelStreamWithFinalizer  = core.NewChannelStreamWithFinalizer
-	dataSourceToBase64             = core.DataSourceToBase64
-	readAllStringFromDataSource    = core.ReadAllStringFromDataSource
-	truncateForConversation        = core.TruncateForConversation
-	safeJSONParse                  = core.SafeJSONParse
-	completionResultsToText        = core.CompletionResultsToText
-	optionFloat                    = core.OptionFloat
-	optionInt                      = core.OptionInt
-	optionBool                     = core.OptionBool
-	optionString                   = core.OptionString
-	optionStringSlice              = core.OptionStringSlice
-	hasHTTPTimeout                 = core.HasHTTPTimeout
-	newHTTPClient                  = core.NewHTTPClient
-	isClaudeVersionGTE             = core.IsClaudeVersionGTE
-	claudeSupportsAdaptiveThinking = core.ClaudeSupportsAdaptiveThinking
-	retryableFromStatusAndMessage  = core.RetryableFromStatusAndMessage
-	errorStatusAndName             = core.ErrorStatusAndName
-	boolPtr                        = common.BoolPtr
-	newLlumiverseError             = common.NewLlumiverseError
-	newTextResult                  = common.NewTextResult
-	tokens                         = common.Tokens
-	toolInputObject                = common.ToolInputObject
+	executeWithPrompt             = core.ExecuteWithPrompt
+	streamWithPrompt              = core.StreamWithPrompt
+	doJSON                        = core.DoJSON
+	joinEndpoint                  = core.JoinEndpoint
+	postSSE                       = core.PostSSE
+	scanSSE                       = core.ScanSSE
+	newChannelStreamWithFinalizer = core.NewChannelStreamWithFinalizer
+	leaseCompletionStream         = core.LeaseCompletionStream
+	dataSourceToBase64            = core.DataSourceToBase64
+	readAllStringFromDataSource   = core.ReadAllStringFromDataSource
+	optionFloat                   = core.OptionFloat
+	optionInt                     = core.OptionInt
+	optionBool                    = core.OptionBool
+	optionString                  = core.OptionString
+	optionStringSlice             = core.OptionStringSlice
+	hasHTTPTimeout                = core.HasHTTPTimeout
+	newHTTPClient                 = core.NewHTTPClient
+	retryableFromStatusAndMessage = core.RetryableFromStatusAndMessage
+	errorStatusAndName            = core.ErrorStatusAndName
+	boolPtr                       = common.BoolPtr
+	newLlumiverseError            = common.NewLlumiverseError
+	newTextResult                 = common.NewTextResult
+	newThoughtsResult             = common.NewThoughtsResult
+	tokens                        = common.Tokens
+	toolInputObject               = common.ToolInputObject
 )
 
 // ptr returns a pointer to v, for the optional fields of the generated types.
 func ptr[T any](v T) *T {
 	return &v
-}
-
-// stringValue returns the value of an optional string, or "" when it is unset.
-func stringValue(v *string) string {
-	if v == nil {
-		return ""
-	}
-	return *v
 }

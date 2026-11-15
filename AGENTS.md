@@ -7,8 +7,8 @@ file current when conventions change.
 
 `llumiverse-go` is a provider-neutral Go client for LLM completions, streaming,
 model listing, image generation, and embeddings across OpenAI, Anthropic Claude,
-AWS Bedrock, and the Gemini Enterprise Agent Platform (formerly Vertex AI). It is
-a Go port of the TypeScript [`vertesia/llumiverse`](https://github.com/vertesia/llumiverse)
+AWS Bedrock, Microsoft Foundry / Azure OpenAI, and the Gemini Enterprise Agent
+Platform (formerly Vertex AI). It is a Go port of the TypeScript [`vertesia/llumiverse`](https://github.com/vertesia/llumiverse)
 and intentionally keeps that project's public concepts: callers build
 `PromptSegment`s, pick a `Driver`, pass `ExecutionOptions`, and get back a
 normalized `Completion`. Training / fine-tuning APIs are out of scope.
@@ -39,6 +39,7 @@ drivers/openai          OpenAI + OpenAI-compatible driver (Responses API)
 drivers/anthropic       thin shell over the shared Claude implementation
 drivers/bedrock         AWS Bedrock driver (Converse / ConverseStream / InvokeModel)
 drivers/vertexai        Gemini Enterprise Agent Platform driver (Gemini/Imagen/Claude)
+drivers/azurefoundry    Microsoft Foundry and Azure OpenAI drivers
 drivers/internal/claude shared Claude prompt/stream/conversation logic
 wire/                   JSON shapes generated from schema/ (package wire) + helpers
 schema/                 llumiverse JSON Schema document, copied from the TS llumiverse

@@ -48,6 +48,8 @@ const (
 	ProviderAnthropic        = common.ProviderAnthropic
 	ProviderVertexAI         = common.ProviderVertexAI
 	ProviderBedrock          = common.ProviderBedrock
+	ProviderAzureFoundry     = common.ProviderAzureFoundry
+	ProviderAzureOpenAI      = common.ProviderAzureOpenAI
 
 	PromptRoleSafety    = common.PromptRoleSafety
 	PromptRoleSystem    = common.PromptRoleSystem

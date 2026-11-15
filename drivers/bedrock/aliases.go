@@ -65,6 +65,7 @@ const (
 var (
 	executeWithPrompt                     = core.ExecuteWithPrompt
 	streamWithPrompt                      = core.StreamWithPrompt
+	leaseCompletionStream                 = core.LeaseCompletionStream
 	newChannelStreamWithFinalizer         = core.NewChannelStreamWithFinalizer
 	dataSourceToBase64                    = core.DataSourceToBase64
 	readAllString                         = core.ReadAllString
