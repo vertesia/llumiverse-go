@@ -41,11 +41,35 @@ func ProcessConversationText(text string, options ExecutionOptions, stripHeartbe
 	if stripHeartbeats && strings.HasPrefix(text, ConversationHeartbeatOpenTag) && strings.HasSuffix(text, ConversationHeartbeatCloseTag) {
 		return ConversationHeartbeatPlaceholder
 	}
-	if options.StripTextMaxTokens > 0 {
-		maxChars := options.StripTextMaxTokens * ConversationCharsPerToken
-		if len(text) > maxChars {
-			return text[:maxChars] + ConversationTextTruncatedMarker
-		}
+	return TruncateConversationText(text, options.StripTextMaxTokens)
+}
+
+// TruncateConversationText cuts text to about maxTokens tokens (ConversationCharsPerToken
+// characters per token) and appends ConversationTextTruncatedMarker. A non-positive maxTokens
+// leaves text unchanged.
+func TruncateConversationText(text string, maxTokens int) string {
+	if maxTokens <= 0 {
+		return text
 	}
-	return text
+	maxChars := maxTokens * ConversationCharsPerToken
+	if len(text) <= maxChars {
+		return text
+	}
+	return text[:maxChars] + ConversationTextTruncatedMarker
+}
+
+// ConversationTruncationCutoff returns the index of the first message that keeps its full text
+// when a driver truncates large text with turn awareness (the TS client's keepRecentMessages):
+// messages before the cutoff are truncated, and the last keepRecent messages (the active working
+// set: the file the agent just read, the latest diagnostics) stay intact. A non-positive
+// keepRecent returns messageCount, so every message is truncated; a conversation no longer than
+// keepRecent returns 0, so nothing is.
+func ConversationTruncationCutoff(messageCount int, keepRecent int) int {
+	if keepRecent <= 0 {
+		return messageCount
+	}
+	if messageCount <= keepRecent {
+		return 0
+	}
+	return messageCount - keepRecent
 }
