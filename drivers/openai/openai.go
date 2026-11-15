@@ -10,6 +10,7 @@ import (
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
+	"github.com/vertesia/llumiverse-go/core"
 )
 
 const defaultOpenAIBaseURL = "https://api.openai.com/v1"
@@ -94,7 +95,11 @@ func (d *OpenAICompatibleDriver) Execute(ctx context.Context, segments []PromptS
 
 // Stream runs a streaming completion, emitting chunks as they arrive.
 func (d *OpenAICompatibleDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	return streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	if err != nil {
+		return nil, err
+	}
+	return core.LeaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // requestTextCompletion issues a Responses API request.

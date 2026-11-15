@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+
+	"github.com/vertesia/llumiverse-go/core"
 )
 
 // OpenAIChatCompletionsOptions configures the generic Chat Completions driver.
@@ -55,9 +57,13 @@ func (d *OpenAIChatCompletionsDriver) Execute(ctx context.Context, segments []Pr
 
 // Stream runs a streaming completion, emitting chunks as they arrive.
 func (d *OpenAIChatCompletionsDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	return streamWithPrompt(ctx, d, segments, options, func(ctx context.Context, prompt any, options ExecutionOptions) (CompletionStream, error) {
+	stream, err := streamWithPrompt(ctx, d, segments, options, func(ctx context.Context, prompt any, options ExecutionOptions) (CompletionStream, error) {
 		return d.protocol.Stream(ctx, chatCompletionsSDKTransport{d.OpenAICompatibleDriver}, prompt, options)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return core.LeaseCompletionStream(stream, d.options.StreamStartTimeout), nil
 }
 
 // chatCompletionsSDKTransport posts Chat Completions requests with the

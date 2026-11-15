@@ -240,9 +240,9 @@ func (p ChatCompletionsProtocol) Execute(ctx context.Context, transport ChatComp
 	choice := response.Choices[0]
 	message := choice.Message
 	results := chatCompletionsResults(message.contentText(), message.reasoningText(), includeThoughts)
-	cutOff := isCutOffFinishReason(choice.FinishReason)
+	cutOff := core.IsCutOffFinishReason(choice.FinishReason)
 	calls := message.functionCalls()
-	if cutOff && len(calls) > 0 && !isJSONObjectText(calls[len(calls)-1].Function.Arguments) {
+	if cutOff && len(calls) > 0 && !core.IsJSONObjectText(calls[len(calls)-1].Function.Arguments) {
 		// A cut-off stop may have ended inside the last tool call; earlier calls had finished.
 		calls = calls[:len(calls)-1]
 	}
@@ -925,7 +925,8 @@ func finalizeChatCompletionsConversation(conversation chatCompletionsConversatio
 }
 
 // processChatContentParts applies the retention rules to content parts:
-// expired inline images become a placeholder and text is truncated.
+// expired inline images and all inline audio become placeholders, and text is
+// truncated.
 func processChatContentParts(parts []any, options ExecutionOptions, stripMedia, stripHeartbeats bool) []any {
 	out := make([]any, 0, len(parts))
 	for _, raw := range parts {
@@ -942,6 +943,10 @@ func processChatContentParts(parts []any, options ExecutionOptions, stripMedia, 
 				out = append(out, map[string]any{"type": "text", "text": conversationImagePlaceholder})
 				continue
 			}
+		case "input_audio":
+			// Inline audio is not kept in history on any turn.
+			out = append(out, map[string]any{"type": "text", "text": core.ConversationAudioPlaceholder})
+			continue
 		case "text":
 			if text, ok := part["text"].(string); ok {
 				part["text"] = core.ProcessConversationText(text, options, stripHeartbeats)
@@ -1055,26 +1060,6 @@ func normalizeChatCompletionsFinishReason(reason string, hasToolUse bool) string
 	return reason
 }
 
-// isCutOffFinishReason reports whether a finish reason means the response may
-// have stopped inside its last tool call.
-func isCutOffFinishReason(reason string) bool {
-	switch reason {
-	case "length", "refusal", "content_filter", "content_filtered", "guardrail_intervened":
-		return true
-	}
-	return false
-}
-
-// isJSONObjectText reports whether text parses as a JSON object.
-func isJSONObjectText(text string) bool {
-	var value any
-	if json.Unmarshal([]byte(text), &value) != nil {
-		return false
-	}
-	_, ok := value.(map[string]any)
-	return ok
-}
-
 func chatIncludeThoughts(options ExecutionOptions) bool {
 	v := optionBoolPtr(options.ModelOptions, "include_thoughts")
 	return v == nil || *v
@@ -1179,15 +1164,10 @@ type chatCompletionsStreamState struct {
 	reasoningContent *string
 	reasoning        *string
 	calls            map[int]*chatToolCall
-	finishReason     string
-	serviceTier      string
 }
 
 func (s *chatCompletionsStreamState) chunk(response chatCompletionsResponse) CompletionChunk {
 	out := CompletionChunk{TokenUsage: openAIChatCompletionsUsage(response.Usage), ServiceTier: response.ServiceTier}
-	if response.ServiceTier != "" {
-		s.serviceTier = response.ServiceTier
-	}
 	if len(response.Choices) == 0 {
 		return out
 	}
@@ -1238,9 +1218,6 @@ func (s *chatCompletionsStreamState) chunk(response chatCompletionsResponse) Com
 	}
 	out.Result = results
 	out.FinishReason = normalizeChatCompletionsFinishReason(choice.FinishReason, len(out.ToolUse) > 0)
-	if choice.FinishReason != "" {
-		s.finishReason = choice.FinishReason
-	}
 	return out
 }
 
@@ -1254,31 +1231,19 @@ func withoutThoughts(results []CompletionResult) []CompletionResult {
 	return out
 }
 
-// finalize replaces the stream's positional tool IDs with the provider's IDs,
-// drops a last call cut off by a content filter (core drops those cut off by
-// the token limit), and records the service tier.
+// finalize replaces the stream's positional tool IDs with the provider's IDs.
+// Core has already dropped a call cut off by the stop and set the service tier.
 func (s *chatCompletionsStreamState) finalize(resp *ExecutionResponse) {
-	if s.serviceTier != "" {
-		resp.ServiceTier = s.serviceTier
-	}
-	last := -1
-	for index := range s.calls {
-		last = max(last, index)
-	}
-	dropLast := last >= 0 && isCutOffFinishReason(s.finishReason) && !isJSONObjectText(s.calls[last].Function.Arguments)
-	tools := resp.ToolUse[:0]
-	for _, tool := range resp.ToolUse {
-		if index, err := strconv.Atoi(strings.TrimPrefix(tool.ID, "tool_")); err == nil && strings.HasPrefix(tool.ID, "tool_") {
-			if dropLast && index == last {
-				continue
-			}
+	for i, tool := range resp.ToolUse {
+		if !strings.HasPrefix(tool.ID, "tool_") {
+			continue
+		}
+		if index, err := strconv.Atoi(strings.TrimPrefix(tool.ID, "tool_")); err == nil {
 			if native := s.calls[index]; native != nil && native.ID != "" {
-				tool.ID = native.ID
+				resp.ToolUse[i].ID = native.ID
 			}
 		}
-		tools = append(tools, tool)
 	}
-	resp.ToolUse = tools
 }
 
 // assistantMessage returns the streamed assistant message in native form.
