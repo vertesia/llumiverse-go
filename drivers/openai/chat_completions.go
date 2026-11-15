@@ -403,7 +403,7 @@ func (p ChatCompletionsProtocol) BuildPayload(messages []map[string]any, options
 		}
 	}
 	if options.ResultSchema != nil && !p.Options.ResultSchemaInPrompt {
-		schema, strict := openAISchemaForResponses(options.ResultSchema)
+		schema, strict := formatOpenAISchema(options.ResultSchema)
 		payload["response_format"] = map[string]any{
 			"type":        "json_schema",
 			"json_schema": map[string]any{"name": "output", "strict": strict, "schema": schema},
@@ -478,9 +478,9 @@ func chatCompletionsTools(tools []ToolDefinition, compatible bool) []any {
 		}
 		if tool.InputSchema != nil {
 			if compatible {
-				fn["parameters"] = openAILimitedSchema(tool.InputSchema)
+				fn["parameters"] = limitedSchemaFormat(tool.InputSchema)
 			} else {
-				schema, strict := openAISchemaForResponses(tool.InputSchema)
+				schema, strict := formatOpenAISchema(tool.InputSchema)
 				fn["parameters"] = schema
 				fn["strict"] = strict
 			}

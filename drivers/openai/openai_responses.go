@@ -344,7 +344,7 @@ func (d *OpenAICompatibleDriver) openAIResponseTextConfig(options ExecutionOptio
 	case options.ResultSchema != nil && options.PromptCacheSchemaSuffix:
 		text["format"] = map[string]any{"type": "json_object"}
 	case options.ResultSchema != nil && d.supportsSchema(options.Model):
-		schema, strict := openAISchemaForResponses(options.ResultSchema)
+		schema, strict := formatOpenAISchema(options.ResultSchema)
 		text["format"] = map[string]any{
 			"type":   "json_schema",
 			"name":   "format_output",
@@ -366,7 +366,7 @@ func (d *OpenAICompatibleDriver) openAIResponseTextConfig(options ExecutionOptio
 func openAIResponseTools(tools []ToolDefinition) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
-		schema, strict := openAISchemaForResponses(tool.InputSchema)
+		schema, strict := formatOpenAISchema(tool.InputSchema)
 		fn := map[string]any{
 			"type":       "function",
 			"name":       tool.Name,
@@ -802,91 +802,4 @@ func completionResultsToText(results []CompletionResult) string {
 func stringValue(v any) string {
 	s, _ := v.(string)
 	return s
-}
-
-// openAISchemaForResponses prepares a JSON schema for the Responses API,
-// returning the strict-mode transform (and true) when possible, or falling back
-// to the limited transform (and false).
-func openAISchemaForResponses(schema map[string]any) (map[string]any, bool) {
-	if strict, err := openAIStrictSchema(schema, 0); err == nil {
-		return strict, true
-	}
-	return openAILimitedSchema(schema), false
-}
-
-// openAIStrictSchema transforms a schema to satisfy OpenAI strict structured
-// output: it drops defaults, sets additionalProperties=false on objects, marks
-// every property required, and recurses. It errors on missing property types,
-// empty objects, or nesting deeper than five levels (cases strict mode rejects).
-func openAIStrictSchema(schema map[string]any, depth int) (map[string]any, error) {
-	if depth > 5 {
-		return nil, errors.New("schema nesting too deep")
-	}
-	out := copyMapWithoutDefault(schema)
-	if out["type"] == "object" {
-		out["additionalProperties"] = false
-	}
-	if props, ok := out["properties"].(map[string]any); ok {
-		required := make([]string, 0, len(props))
-		nextProps := map[string]any{}
-		for name, raw := range props {
-			required = append(required, name)
-			prop, ok := raw.(map[string]any)
-			if !ok {
-				nextProps[name] = raw
-				continue
-			}
-			if _, ok := prop["type"]; !ok {
-				return nil, fmt.Errorf("schema property %q is missing type", name)
-			}
-			next, err := openAIStrictSchema(prop, depth+1)
-			if err != nil {
-				return nil, err
-			}
-			nextProps[name] = next
-		}
-		out["required"] = required
-		out["properties"] = nextProps
-	}
-	if out["type"] == "object" {
-		if props, ok := out["properties"].(map[string]any); !ok || len(props) == 0 {
-			return nil, errors.New("empty object schema is not supported in strict mode")
-		}
-	}
-	return out, nil
-}
-
-// openAILimitedSchema is the non-strict fallback transform: it drops defaults,
-// ensures a top-level object type, and recurses into properties without imposing
-// strict-mode constraints.
-func openAILimitedSchema(schema map[string]any) map[string]any {
-	out := copyMapWithoutDefault(schema)
-	if _, ok := out["type"]; !ok {
-		out["type"] = "object"
-	}
-	if props, ok := out["properties"].(map[string]any); ok {
-		nextProps := map[string]any{}
-		for name, raw := range props {
-			if prop, ok := raw.(map[string]any); ok {
-				nextProps[name] = openAILimitedSchema(prop)
-			} else {
-				nextProps[name] = raw
-			}
-		}
-		out["properties"] = nextProps
-	}
-	return out
-}
-
-// copyMapWithoutDefault shallow-copies a map omitting the "default" key, which
-// OpenAI strict schema mode does not accept.
-func copyMapWithoutDefault(in map[string]any) map[string]any {
-	out := make(map[string]any, len(in))
-	for key, value := range in {
-		if key == "default" {
-			continue
-		}
-		out[key] = value
-	}
-	return out
 }

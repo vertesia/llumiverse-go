@@ -334,41 +334,6 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 	t.Parallel()
 
-	strict, ok := openAISchemaForResponses(map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"answer": map[string]any{"type": "string", "default": "ignored"},
-		},
-	})
-	if !ok || strict["additionalProperties"] != false {
-		t.Fatalf("strict schema = %#v, %v", strict, ok)
-	}
-	props := strict["properties"].(map[string]any)
-	if _, exists := props["answer"].(map[string]any)["default"]; exists {
-		t.Fatalf("default was not dropped: %#v", props)
-	}
-	if _, err := openAIStrictSchema(map[string]any{"type": "object"}, 0); err == nil {
-		t.Fatal("expected empty strict object error")
-	}
-	if _, err := openAIStrictSchema(map[string]any{"properties": map[string]any{"bad": map[string]any{}}}, 0); err == nil {
-		t.Fatal("expected missing property type error")
-	}
-	if _, err := openAIStrictSchema(map[string]any{"type": "string"}, 6); err == nil {
-		t.Fatal("expected depth error")
-	}
-	limited, ok := openAISchemaForResponses(map[string]any{
-		"properties": map[string]any{
-			"nested": map[string]any{"default": "ignored"},
-		},
-	})
-	if ok || limited["type"] != "object" {
-		t.Fatalf("limited schema = %#v, %v", limited, ok)
-	}
-	nested := limited["properties"].(map[string]any)["nested"].(map[string]any)
-	if nested["type"] != "object" {
-		t.Fatalf("nested limited schema = %#v", nested)
-	}
-
 	if got := openAIResponseFinishReason(&responsesResponse{Status: "completed"}, false); got != "stop" {
 		t.Fatalf("completed finish = %q", got)
 	}

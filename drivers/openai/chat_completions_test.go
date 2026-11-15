@@ -269,7 +269,7 @@ func TestChatCompletionsToolImagesMoveToUserMessage(t *testing.T) {
 func TestChatCompletionsSchemaInPromptAndNoData(t *testing.T) {
 	t.Parallel()
 
-	schema := map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}
+	schema := map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}, "required": []any{"a"}, "additionalProperties": false}
 	protocol := ChatCompletionsProtocol{Options: ChatCompletionsProtocolOptions{ResultSchemaInPrompt: true}}
 	_, transport := chatExecute(t, protocol, `{"choices":[{"finish_reason":"stop","message":{"content":"{}"}}]}`, ExecutionOptions{ResultSchema: schema})
 	sent := fmt.Sprint(transport.payload["messages"])
