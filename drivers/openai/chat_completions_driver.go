@@ -50,6 +50,9 @@ func (d *OpenAIChatCompletionsDriver) FormatDebugPrompt(prompt any) any {
 
 // Execute runs a single non-streaming completion.
 func (d *OpenAIChatCompletionsDriver) Execute(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (*ExecutionResponse, error) {
+	if d.isOpenAIAudioModel(options.Model) {
+		return d.executeOpenAIAudio(ctx, segments, options)
+	}
 	return executeWithPrompt(ctx, d, segments, options, func(ctx context.Context, prompt any, options ExecutionOptions) (*Completion, error) {
 		return d.protocol.Execute(ctx, chatCompletionsSDKTransport{d.OpenAICompatibleDriver}, prompt, options)
 	})
@@ -57,6 +60,9 @@ func (d *OpenAIChatCompletionsDriver) Execute(ctx context.Context, segments []Pr
 
 // Stream runs a streaming completion, emitting chunks as they arrive.
 func (d *OpenAIChatCompletionsDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
+	if d.isOpenAIAudioModel(options.Model) {
+		return d.openAIAudioStream(ctx, segments, options)
+	}
 	stream, err := streamWithPrompt(ctx, d, segments, options, func(ctx context.Context, prompt any, options ExecutionOptions) (CompletionStream, error) {
 		return d.protocol.Stream(ctx, chatCompletionsSDKTransport{d.OpenAICompatibleDriver}, prompt, options)
 	})

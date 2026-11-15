@@ -90,11 +90,17 @@ func (d *OpenAICompatibleDriver) CreatePrompt(ctx context.Context, segments []Pr
 
 // Execute runs a single non-streaming completion.
 func (d *OpenAICompatibleDriver) Execute(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (*ExecutionResponse, error) {
+	if d.isOpenAIAudioModel(options.Model) {
+		return d.executeOpenAIAudio(ctx, segments, options)
+	}
 	return executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
 }
 
 // Stream runs a streaming completion, emitting chunks as they arrive.
 func (d *OpenAICompatibleDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
+	if d.isOpenAIAudioModel(options.Model) {
+		return d.openAIAudioStream(ctx, segments, options)
+	}
 	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
 	if err != nil {
 		return nil, err
