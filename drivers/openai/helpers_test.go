@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	oa "github.com/openai/openai-go"
+	oa "github.com/openai/openai-go/v3"
 	"github.com/vertesia/llumiverse-go/common"
 )
 
@@ -494,5 +494,56 @@ func writeOpenAISSE(t *testing.T, w http.ResponseWriter, data string) {
 	_, err := w.Write([]byte("data: " + data + "\n\n"))
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenAIDriverIgnoresOpenAIEnvironment(t *testing.T) {
+	t.Setenv("OPENAI_BASE_URL", "http://127.0.0.1:1/env")
+	t.Setenv("OPENAI_API_KEY", "env-key")
+	t.Setenv("OPENAI_ORG_ID", "env-org")
+	t.Setenv("OPENAI_PROJECT_ID", "env-project")
+	t.Setenv("OPENAI_CUSTOM_HEADERS", "X-Env-Header: leaked")
+
+	var headers []http.Header
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		headers = append(headers, r.Header.Clone())
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"id":"gpt-5","object":"model","owned_by":"openai","created":1}]}`))
+		case "/v1/embeddings":
+			_, _ = w.Write([]byte(`{"object":"list","data":[{"object":"embedding","index":0,"embedding":[0.1]}],"model":"m","usage":{"prompt_tokens":1,"total_tokens":1}}`))
+		default:
+			_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hi"}]}]}`))
+		}
+	}))
+	defer server.Close()
+
+	driver, err := NewOpenAICompatibleDriver(OpenAICompatibleOptions{APIKey: "test-key", Endpoint: server.URL + "/v1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, err := driver.ListModels(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.GenerateEmbeddings(ctx, EmbeddingsOptions{Inputs: []EmbeddingInput{{Text: "x"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := driver.Execute(ctx, []PromptSegment{{Role: PromptRoleUser, Content: "hello"}}, ExecutionOptions{Model: "gpt-5"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(headers) != 3 {
+		t.Fatalf("requests = %d, want 3", len(headers))
+	}
+	for _, h := range headers {
+		if got := h.Get("Authorization"); got != "Bearer test-key" {
+			t.Errorf("Authorization = %q", got)
+		}
+		for _, name := range []string{"OpenAI-Organization", "OpenAI-Project", "X-Env-Header"} {
+			if got := h.Get(name); got != "" {
+				t.Errorf("%s = %q, want none", name, got)
+			}
+		}
 	}
 }

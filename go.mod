@@ -10,7 +10,7 @@ require (
 	github.com/aws/smithy-go v1.28.9
 	github.com/joho/godotenv v1.5.1
 	github.com/oapi-codegen/runtime v1.9.0
-	github.com/openai/openai-go v1.12.0
+	github.com/openai/openai-go/v3 v3.99.0
 	golang.org/x/oauth2 v0.38.0
 )
 
@@ -29,6 +29,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sso v1.39.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/tidwall/gjson v1.20.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

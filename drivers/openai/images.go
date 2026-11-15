@@ -12,7 +12,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/openai/openai-go/option"
+	"github.com/openai/openai-go/v3/option"
 	"github.com/vertesia/llumiverse-go/wire"
 )
 
