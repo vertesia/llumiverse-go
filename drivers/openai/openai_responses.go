@@ -43,7 +43,23 @@ func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segm
 			if segment.ToolUseID == "" {
 				return openAIResponsesPrompt{}, errors.New("tool prompt segment requires ToolUseID")
 			}
-			others = append(others, responseItem{"type": "function_call_output", "call_id": segment.ToolUseID, "output": segment.Content})
+			files, err := openAIResponseFileParts(ctx, segment.Files, options)
+			if err != nil {
+				return openAIResponsesPrompt{}, err
+			}
+			var output any = segment.Content
+			if len(files) > 0 {
+				// Tool-result attachments travel in the output itself.
+				var parts []any
+				if segment.Content != "" {
+					parts = append(parts, map[string]any{"type": "input_text", "text": segment.Content})
+				}
+				for _, part := range files {
+					parts = append(parts, part)
+				}
+				output = parts
+			}
+			others = append(others, responseItem{"type": "function_call_output", "call_id": segment.ToolUseID, "output": output})
 			continue
 		}
 		parts, err := openAIResponseContentParts(ctx, segment, options)
@@ -61,7 +77,12 @@ func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segm
 		}
 		switch segment.Role {
 		case PromptRoleSystem:
-			system = append(system, responseMessage(systemRole, inputTextParts(parts)))
+			texts := inputTextParts(parts)
+			if len(texts) == 1 && len(segment.Files) == 0 {
+				system = append(system, responseItem{"type": "message", "role": systemRole, "content": texts[0]["text"]})
+			} else {
+				system = append(system, responseMessage(systemRole, texts))
+			}
 		case PromptRoleSafety:
 			safety := inputTextParts(parts)
 			for _, part := range safety {
@@ -124,19 +145,58 @@ func inputTextParts(parts []responseItem) []responseItem {
 	return out
 }
 
-// openAIResponseContentParts builds the input content parts for a segment: an
-// input_image part per file, then an input_text part for its content.
+// openAIResponseContentParts builds the input content parts for a segment: a
+// part per supported file, then an input_text part for its content.
 func openAIResponseContentParts(ctx context.Context, segment PromptSegment, options ExecutionOptions) ([]responseItem, error) {
-	parts := make([]responseItem, 0, len(segment.Files)+1)
-	for _, file := range segment.Files {
-		dataURL, err := dataSourceToDataURL(ctx, file)
-		if err != nil {
-			return nil, err
-		}
-		parts = append(parts, responseItem{"type": "input_image", "image_url": dataURL, "detail": openAIImageDetail(options)})
+	parts, err := openAIResponseFileParts(ctx, segment.Files, options)
+	if err != nil {
+		return nil, err
 	}
 	if segment.Content != "" {
 		parts = append(parts, responseItem{"type": "input_text", "text": segment.Content})
+	}
+	return parts, nil
+}
+
+// openAIImageDataURL inlines an image, assuming JPEG when the file has no type.
+func openAIImageDataURL(ctx context.Context, file DataSource) (string, error) {
+	if file.MIMEType() != "" {
+		return dataSourceToDataURL(ctx, file)
+	}
+	data, err := core.DataSourceToBase64(ctx, file)
+	if err != nil {
+		return "", err
+	}
+	return "data:image/jpeg;base64," + data, nil
+}
+
+// openAIResponseFileParts converts files to Responses content parts: images
+// (or files without a type) become input_image, PDFs input_file, and text files
+// input_text with their content. Other types (audio, video) are skipped.
+func openAIResponseFileParts(ctx context.Context, files []DataSource, options ExecutionOptions) ([]responseItem, error) {
+	parts := make([]responseItem, 0, len(files))
+	for _, file := range files {
+		mime := file.MIMEType()
+		switch {
+		case mime == "" || strings.HasPrefix(mime, "image/"):
+			dataURL, err := openAIImageDataURL(ctx, file)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, responseItem{"type": "input_image", "image_url": dataURL, "detail": openAIImageDetail(options)})
+		case mime == "application/pdf":
+			dataURL, err := dataSourceToDataURL(ctx, file)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, responseItem{"type": "input_file", "filename": file.Name(), "file_data": dataURL})
+		case strings.HasPrefix(mime, "text/"):
+			text, err := dataSourceText(ctx, file)
+			if err != nil {
+				return nil, err
+			}
+			parts = append(parts, responseItem{"type": "input_text", "text": text})
+		}
 	}
 	return parts, nil
 }

@@ -144,3 +144,33 @@ func TestOpenAIResponsesServiceTier(t *testing.T) {
 		t.Fatalf("stream tier = %q", stream.ServiceTier)
 	}
 }
+
+// Mirrors the TS tool-result attachment tests (and openai_format file parts):
+// tool outputs carry their files, PDFs become input_file, text files their
+// content, audio is skipped, and a plain system message is a string.
+func TestOpenAIResponsesAttachments(t *testing.T) {
+	t.Parallel()
+
+	files := []DataSource{
+		&BytesDataSource{FileName: "chart.png", MIME: "image/png", Data: []byte("png")},
+		&BytesDataSource{FileName: "report.pdf", MIME: "application/pdf", Data: []byte("pdf")},
+		&BytesDataSource{FileName: "notes.txt", MIME: "text/plain", Data: []byte("plain notes")},
+		&BytesDataSource{FileName: "clip.mp3", MIME: "audio/mpeg", Data: []byte("mp3")},
+	}
+	conversation := []responseItem{{"type": "function_call", "call_id": "c1", "name": "fetch", "arguments": "{}"}}
+	body, _, err := executeResponses(t, ExecutionOptions{Conversation: conversation, Tools: []ToolDefinition{{Name: "fetch"}}}, okResponse,
+		PromptSegment{Role: PromptRoleSystem, Content: "Be brief"},
+		PromptSegment{Role: PromptRoleTool, ToolUseID: "c1", Content: "fetched", Files: files})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := marshalNoEscape(body["input"])
+	for _, want := range []string{
+		`{"content":"Be brief","role":"system","type":"message"}`,
+		`{"call_id":"c1","output":[{"text":"fetched","type":"input_text"},{"detail":"auto","image_url":"data:image/png;base64,cG5n","type":"input_image"},{"file_data":"data:application/pdf;base64,cGRm","filename":"report.pdf","type":"input_file"},{"text":"plain notes","type":"input_text"}],"type":"function_call_output"}`,
+	} {
+		if !strings.Contains(input, want) {
+			t.Fatalf("input %s\nmissing %s", input, want)
+		}
+	}
+}
