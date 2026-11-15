@@ -453,6 +453,20 @@ func TestListModelsKeepsRoutableModels(t *testing.T) {
 	if owners["zai.glm-5"] != "Z.AI" || owners["google.gemma-4-31b"] != "Google" {
 		t.Errorf("owners = %v", owners)
 	}
+	// The capability catalogue describes each model as Mantle serves it.
+	for _, model := range models {
+		input := strings.Join(*model.InputModalities, ",")
+		switch model.ID {
+		case "anthropic.claude-opus-4-7", "openai.gpt-5.6":
+			if input != "text,image" || strings.Join(*model.OutputModalities, ",") != "text" || !*model.ToolSupport {
+				t.Errorf("model %s = %+v", model.ID, model)
+			}
+		case "openai.gpt-oss-120b":
+			if input != "text" || !*model.ToolSupport {
+				t.Errorf("model %s = %+v", model.ID, model)
+			}
+		}
+	}
 }
 
 func TestUnsupportedModelIsNotRetryable(t *testing.T) {

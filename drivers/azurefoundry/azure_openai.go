@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/drivers/openai"
 )
 
@@ -166,7 +167,7 @@ func (d *AzureOpenAIDriver) Execute(ctx context.Context, segments []PromptSegmen
 // arrives as a single chunk.
 func (d *AzureOpenAIDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
 	options.Model = d.requestModel(options.Model)
-	if isImageModel(options.Model) {
+	if isImageModel(options.Model, ProviderAzureOpenAI) {
 		response, err := d.OpenAICompatibleDriver.Execute(ctx, segments, options)
 		if err != nil {
 			return nil, err
@@ -179,7 +180,7 @@ func (d *AzureOpenAIDriver) Stream(ctx context.Context, segments []PromptSegment
 // ListModels describes the configured deployment: Azure OpenAI cannot list
 // deployments. A one-token Chat Completions call reports the model a text
 // deployment runs, as in the TS client; embedding and DALL-E deployments are
-// not listed.
+// not listed. Modalities and tool support come from the capability catalogue.
 func (d *AzureOpenAIDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) ([]AIModel, error) {
 	deployment := d.options.Deployment
 	if deployment == "" {
@@ -189,13 +190,13 @@ func (d *AzureOpenAIDriver) ListModels(ctx context.Context, _ *ModelSearchPayloa
 	if modelID == "" {
 		modelID = deployment
 	}
-	if !isImageModel(modelID) {
+	if !isImageModel(modelID, ProviderAzureOpenAI) {
 		if reported, err := d.deploymentModel(ctx, deployment); err == nil && reported != "" {
 			modelID = reported
 		}
 	}
-	family, _ := modelFamily(modelID)
-	if strings.Contains(strings.ToLower(modelID), "dall-e") || family == familyEmbedding {
+	if strings.Contains(strings.ToLower(modelID), "dall-e") ||
+		capability.IsEmbeddingModel(capability.Listing{ID: modelID}, ProviderAzureOpenAI) {
 		return []AIModel{}, nil
 	}
 	model := AIModel{
@@ -204,7 +205,8 @@ func (d *AzureOpenAIDriver) ListModels(ctx context.Context, _ *ModelSearchPayloa
 		Provider: string(ProviderAzureOpenAI),
 		Owner:    ptr("openai"),
 	}
-	if isImageModel(modelID) {
+	capability.ResolveListingMetadata(modelID, ProviderAzureOpenAI, nil, nil).Apply(&model)
+	if isImageModel(modelID, ProviderAzureOpenAI) {
 		model.ID = deployment + "::" + modelID
 		model.Type = ptr(modelTypeImage)
 	}

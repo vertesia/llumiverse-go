@@ -92,6 +92,10 @@ func TestAzureOpenAISendsTheConfiguredDeploymentOnDeploymentScopedRequests(t *te
 	if len(models) != 1 || models[0].ID != "gpt-6-luna-2026-09-22" || models[0].Name != "production" {
 		t.Fatalf("models = %+v", models)
 	}
+	// The capability catalogue describes the reported model.
+	if model := models[0]; strings.Join(*model.InputModalities, ",") != "text,image" || strings.Join(*model.OutputModalities, ",") != "text" || !*model.ToolSupport {
+		t.Fatalf("model = %+v", model)
+	}
 	if _, err := driver.GenerateEmbeddings(context.Background(), EmbeddingsOptions{Model: "text-embedding-4", Inputs: []common.EmbeddingInput{{Text: "x"}}}); err != nil {
 		t.Fatal(err)
 	}

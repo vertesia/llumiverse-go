@@ -6,11 +6,13 @@ import (
 	"errors"
 	"net/http"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/core"
 )
 
@@ -183,41 +185,69 @@ func (d *OpenAICompatibleDriver) DoAPIRequest(ctx context.Context, method, path 
 	return nil
 }
 
-// ListModels returns the endpoint's available models sorted by ID, marking
-// likely non-tool models as lacking tool support and normalizing the "system"
-// owner to "openai" for first-party OpenAI.
+// ListModels returns the endpoint's models sorted by ID, with the capability catalogue's modalities and tool
+// support, and the "system" owner normalized to "openai" for first-party OpenAI. File audio models are listed as
+// audio models, and on OpenAI image models as image models; other dedicated-endpoint models are left out.
 func (d *OpenAICompatibleDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) ([]AIModel, error) {
 	response, err := d.sdk.Models.List(ctx)
 	if err != nil {
 		return nil, d.formatError(err, "", "listModels")
 	}
+	provider := d.Provider()
 	models := make([]AIModel, 0, len(response.Data))
 	for _, model := range response.Data {
-		// Listing metadata does not describe execution capabilities, so only
-		// the dedicated and legacy endpoint families are left out on OpenAI;
-		// unknown future ids stay visible.
-		if d.Provider() == ProviderOpenAI && openAIUnsupportedEndpointPattern.MatchString(strings.ToLower(model.ID)) {
+		if !d.isListedModel(model.ID) {
 			continue
 		}
 		owner := model.OwnedBy
-		if owner == "system" && d.Provider() == ProviderOpenAI {
+		if owner == "system" && provider == ProviderOpenAI {
 			owner = "openai"
 		}
+		modelType := modelTypeText
+		switch {
+		case d.isOpenAIAudioModel(model.ID):
+			modelType = modelTypeAudio
+		case d.isImageModel(model.ID):
+			modelType = modelTypeImage
+		}
 		aiModel := AIModel{
-			ID:          model.ID,
-			Name:        model.ID,
-			Provider:    string(d.Provider()),
-			Type:        ptr(modelTypeText),
-			CanStream:   ptr(true),
-			ToolSupport: ptr(!isLikelyNonToolOpenAIModel(model.ID)),
+			ID:        model.ID,
+			Name:      model.ID,
+			Provider:  string(provider),
+			Type:      ptr(modelType),
+			CanStream: ptr(true),
 		}
 		if owner != "" {
 			aiModel.Owner = ptr(owner)
+		}
+		metadata := capability.ResolveListingMetadata(model.ID, provider, nil, nil)
+		metadata.Apply(&aiModel)
+		// As in the TS client, OpenAI-compatible listings flag image input; first-party OpenAI listings do not.
+		if provider != ProviderOpenAI {
+			aiModel.IsMultimodal = ptr(slices.Contains(metadata.InputModalities, "image"))
 		}
 		models = append(models, aiModel)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
+}
+
+// isListedModel reports whether ListModels returns a model: file audio models always, and otherwise models of the
+// standard inference path. OpenAI listing metadata does not describe execution, so OpenAI also leaves out the
+// dedicated and legacy endpoint families by name, and DALL-E, while unknown future IDs stay visible; its image models
+// are listed, since the driver runs them on the Images API.
+func (d *OpenAICompatibleDriver) isListedModel(id string) bool {
+	provider := d.Provider()
+	if d.isOpenAIAudioModel(id) {
+		return true
+	}
+	if provider == ProviderOpenAI {
+		lower := strings.ToLower(id)
+		return !openAIUnsupportedEndpointPattern.MatchString(lower) && !strings.Contains(lower, "dall-e") &&
+			(d.isImageModel(id) || !capability.IsDedicatedInferenceModel(id, provider))
+	}
+	return !capability.IsEmbeddingModel(capability.Listing{ID: id}, provider) &&
+		!capability.IsDedicatedInferenceModel(id, provider)
 }
 
 // ValidateConnection verifies the endpoint and credentials by listing models.

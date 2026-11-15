@@ -1270,24 +1270,11 @@ func TestBedrockModelAndProviderHelpers(t *testing.T) {
 	}) {
 		t.Fatal("supported Claude model was filtered")
 	}
-	modalities := bedrockModalities([]bedrocktypes.ModelModality{bedrocktypes.ModelModalityText, bedrocktypes.ModelModalityImage, bedrocktypes.ModelModalityEmbedding, bedrocktypes.ModelModality("AUDIO")})
-	if len(modalities) != 4 || modalities[3] != "audio" {
-		t.Fatalf("modalities = %#v", modalities)
+	if got := bedrockModalityNames([]bedrocktypes.ModelModality{bedrocktypes.ModelModalityText, bedrocktypes.ModelModalityEmbedding}); len(got) != 2 || got[1] != "EMBEDDING" {
+		t.Fatalf("modality names = %#v", got)
 	}
-	if got := bedrockCapabilitiesInput("amazon.nova-canvas-v1:0"); len(got) != 2 || got[1] != "image" {
-		t.Fatalf("image input capabilities = %#v", got)
-	}
-	if got := bedrockCapabilitiesInput("amazon.nova-embed-v1"); len(got) != 4 {
-		t.Fatalf("nova embed capabilities = %#v", got)
-	}
-	if got := bedrockCapabilitiesInput("amazon.titan-embed-image-v1"); len(got) != 2 || got[1] != "image" {
-		t.Fatalf("titan image capabilities = %#v", got)
-	}
-	if got := bedrockCapabilitiesOutput("amazon.nova-canvas-v1:0"); len(got) != 1 || got[0] != "image" {
-		t.Fatalf("image output capabilities = %#v", got)
-	}
-	if got := bedrockCapabilitiesOutput("amazon.embed-v1"); len(got) != 1 || got[0] != "embedding" {
-		t.Fatalf("embedding output capabilities = %#v", got)
+	if got := bedrockModalityNames(nil); got != nil {
+		t.Fatalf("unlisted modalities = %#v", got)
 	}
 	if got := bedrockUnsupportedModels("Amazon"); len(got) == 0 || got[0] != "titan-image-generator" {
 		t.Fatalf("amazon unsupported = %#v", got)

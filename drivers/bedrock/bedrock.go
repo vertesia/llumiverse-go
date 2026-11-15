@@ -18,6 +18,7 @@ import (
 	brdoc "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/document"
 	brtypes "github.com/aws/aws-sdk-go-v2/service/bedrockruntime/types"
 	"github.com/aws/smithy-go"
+	"github.com/vertesia/llumiverse-go/capability"
 )
 
 // Bedrock defaults to Nova multimodal embeddings, matching the TypeScript client.
@@ -1869,10 +1870,8 @@ func bedrockModelSupported(summary bedrocktypes.FoundationModelSummary) bool {
 			return false
 		}
 	}
-	for _, unsupported := range bedrockUnsupportedModels(aws.ToString(summary.ProviderName)) {
-		if strings.Contains(id, unsupported) {
-			return false
-		}
+	if bedrockPublisherExcludes(aws.ToString(summary.ProviderName), id) {
+		return false
 	}
 	if strings.Contains(id, "rerank") || strings.Contains(id, "embed") || strings.Contains(id, "marengo") {
 		return false
@@ -1881,23 +1880,37 @@ func bedrockModelSupported(summary bedrocktypes.FoundationModelSummary) bool {
 }
 
 // bedrockFoundationAIModel maps a foundation model summary to an AIModel,
-// preferring the ARN as the ID.
+// preferring the ARN as the ID. The capability catalogue describes the model;
+// the modalities AWS lists describe only models the catalogue does not know.
 func bedrockFoundationAIModel(summary bedrocktypes.FoundationModelSummary) AIModel {
 	id := aws.ToString(summary.ModelArn)
 	if id == "" {
 		id = aws.ToString(summary.ModelId)
 	}
-	return AIModel{
-		ID:               id,
-		Name:             bedrockFoundationModelName(summary),
-		Provider:         string(ProviderBedrock),
-		Owner:            ptr(aws.ToString(summary.ProviderName)),
-		Type:             ptr(ModelType("text")),
-		CanStream:        ptr(aws.ToBool(summary.ResponseStreamingSupported)),
-		InputModalities:  ptr(bedrockModalities(summary.InputModalities)),
-		OutputModalities: ptr(bedrockModalities(summary.OutputModalities)),
-		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
+	model := AIModel{
+		ID:        id,
+		Name:      bedrockFoundationModelName(summary),
+		Provider:  string(ProviderBedrock),
+		Owner:     ptr(aws.ToString(summary.ProviderName)),
+		Type:      ptr(ModelType("text")),
+		CanStream: ptr(aws.ToBool(summary.ResponseStreamingSupported)),
 	}
+	capability.ResolveListingMetadata(id, ProviderBedrock, bedrockModalityNames(summary.InputModalities),
+		bedrockModalityNames(summary.OutputModalities)).Apply(&model)
+	return model
+}
+
+// bedrockModalityNames returns the modalities AWS lists (TEXT, IMAGE, EMBEDDING, SPEECH, ...), or nil when it lists
+// none; the catalogue normalizes them.
+func bedrockModalityNames(modalities []bedrocktypes.ModelModality) []string {
+	if modalities == nil {
+		return nil
+	}
+	names := make([]string, len(modalities))
+	for i, modality := range modalities {
+		names[i] = string(modality)
+	}
+	return names
 }
 
 // bedrockFoundationModelName is the AWS model name, which already names the
@@ -1922,31 +1935,25 @@ func bedrockCustomAIModel(summary bedrocktypes.CustomModelSummary) (AIModel, boo
 	if capabilityID == "" {
 		capabilityID = id
 	}
-	if bedrockIsEmbeddingModel(capabilityID) {
+	if capability.IsEmbeddingModel(capability.Listing{ID: capabilityID}, ProviderBedrock) {
 		return AIModel{}, false
 	}
-	return AIModel{
-		ID:               id,
-		Name:             name,
-		Provider:         string(ProviderBedrock),
-		Owner:            ptr("custom"),
-		Description:      ptr("Custom model from " + aws.ToString(summary.BaseModelName)),
-		Type:             ptr(ModelType("text")),
-		IsCustom:         ptr(true),
-		InputModalities:  ptr(bedrockCapabilitiesInput(capabilityID)),
-		OutputModalities: ptr(bedrockCapabilitiesOutput(capabilityID)),
-		ToolSupport:      ptr(bedrockLikelySupportsTools(capabilityID)),
-	}, true
-}
-
-// bedrockIsEmbeddingModel reports whether a model ID names an embedding model.
-func bedrockIsEmbeddingModel(model string) bool {
-	model = strings.ToLower(model)
-	return strings.Contains(model, "embed") || strings.Contains(model, "marengo")
+	model := AIModel{
+		ID:          id,
+		Name:        name,
+		Provider:    string(ProviderBedrock),
+		Owner:       ptr("custom"),
+		Description: ptr("Custom model from " + aws.ToString(summary.BaseModelName)),
+		Type:        ptr(ModelType("text")),
+		IsCustom:    ptr(true),
+	}
+	capability.ResolveListingMetadata(capabilityID, ProviderBedrock, nil, nil).Apply(&model)
+	return model, true
 }
 
 // bedrockInferenceProfileAIModel maps an inference profile to an AIModel,
-// returning false when it lacks an ID or its inferred publisher is unsupported.
+// returning false when it lacks an ID, its inferred publisher is unsupported,
+// the publisher excludes the model, or the catalogue describes an embedding model.
 // The owner is the publisher's display name from publisherNames when known,
 // else its publisher key.
 func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary, publisherNames map[string]string) (AIModel, bool) {
@@ -1958,7 +1965,16 @@ func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary
 		return AIModel{}, false
 	}
 	provider := bedrockProviderFromProfile(summary)
-	if provider == "" || !bedrockPublisherSupported(provider) || bedrockIsEmbeddingModel(id) {
+	if provider == "" || !bedrockPublisherSupported(provider) ||
+		bedrockPublisherExcludes(provider, strings.ToLower(aws.ToString(summary.InferenceProfileId))) {
+		return AIModel{}, false
+	}
+	metadata := capability.ResolveListingMetadata(id, ProviderBedrock, nil, nil)
+	if capability.IsEmbeddingModel(capability.Listing{
+		ID:               id,
+		InputModalities:  metadata.InputModalities,
+		OutputModalities: metadata.OutputModalities,
+	}, ProviderBedrock) {
 		return AIModel{}, false
 	}
 	name := aws.ToString(summary.InferenceProfileName)
@@ -1969,16 +1985,15 @@ func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary
 	if display, ok := publisherNames[provider]; ok {
 		owner = display
 	}
-	return AIModel{
-		ID:               id,
-		Name:             name,
-		Provider:         string(ProviderBedrock),
-		Owner:            ptr(owner),
-		Type:             ptr(ModelType("text")),
-		InputModalities:  ptr(bedrockCapabilitiesInput(id)),
-		OutputModalities: ptr(bedrockCapabilitiesOutput(id)),
-		ToolSupport:      ptr(bedrockLikelySupportsTools(id)),
-	}, true
+	model := AIModel{
+		ID:       id,
+		Name:     name,
+		Provider: string(ProviderBedrock),
+		Owner:    ptr(owner),
+		Type:     ptr(ModelType("text")),
+	}
+	metadata.Apply(&model)
+	return model, true
 }
 
 // bedrockProviderFromProfile infers the publisher of an inference profile by
@@ -2054,64 +2069,15 @@ func bedrockUnsupportedModels(provider string) []string {
 	}
 }
 
-// bedrockModalities maps Bedrock model modalities to the common modality strings.
-func bedrockModalities(modalities []bedrocktypes.ModelModality) []string {
-	out := make([]string, 0, len(modalities))
-	for _, modality := range modalities {
-		switch modality {
-		case bedrocktypes.ModelModalityText:
-			out = append(out, "text")
-		case bedrocktypes.ModelModalityImage:
-			out = append(out, "image")
-		case bedrocktypes.ModelModalityEmbedding:
-			out = append(out, "embedding")
-		case "SPEECH":
-			out = append(out, "audio")
-		default:
-			out = append(out, strings.ToLower(string(modality)))
+// bedrockPublisherExcludes reports whether a publisher's unsupported list
+// excludes a lower-cased model or inference profile ID.
+func bedrockPublisherExcludes(provider string, id string) bool {
+	for _, unsupported := range bedrockUnsupportedModels(provider) {
+		if strings.Contains(id, unsupported) {
+			return true
 		}
 	}
-	return out
-}
-
-// bedrockCapabilitiesInput infers input modalities from a model ID when the API
-// does not report them (custom models and inference profiles), distinguishing
-// image-generation, multimodal embedding, and text/image embedding families.
-func bedrockCapabilitiesInput(model string) []string {
-	model = strings.ToLower(model)
-	if isBedrockImageModel(model) {
-		return []string{"text", "image"}
-	}
-	if strings.Contains(model, "embed") {
-		if strings.Contains(model, "nova") || strings.Contains(model, "twelvelabs.marengo") {
-			return []string{"text", "image", "video", "audio"}
-		}
-		if strings.Contains(model, "titan-embed-image") || strings.HasPrefix(model, "cohere.embed") {
-			return []string{"text", "image"}
-		}
-		return []string{"text"}
-	}
-	return []string{"text"}
-}
-
-// bedrockCapabilitiesOutput infers output modalities from a model ID
-// (image, embedding, or text).
-func bedrockCapabilitiesOutput(model string) []string {
-	model = strings.ToLower(model)
-	if isBedrockImageModel(model) {
-		return []string{"image"}
-	}
-	if strings.Contains(model, "embed") {
-		return []string{"embedding"}
-	}
-	return []string{"text"}
-}
-
-// bedrockLikelySupportsTools heuristically reports tool support from the model
-// ID (Claude 3/4 and Nova families).
-func bedrockLikelySupportsTools(model string) bool {
-	model = strings.ToLower(model)
-	return strings.Contains(model, "claude-3") || strings.Contains(model, "claude-4") || strings.Contains(model, "nova")
+	return false
 }
 
 // ValidateConnection verifies AWS Bedrock access by listing models.

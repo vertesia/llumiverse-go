@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/core"
 	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
 	"github.com/vertesia/llumiverse-go/drivers/openai"
@@ -202,7 +203,7 @@ func (d *AzureFoundryDriver) resolve(ctx context.Context, model string) (route, 
 	deployment, _ := parseModelID(model)
 	// An explicit image source keeps the Images path independent of publisher discovery.
 	explicit := isCompositeModelID(model) || d.options.SourceModel != ""
-	if source := d.sourceModel(model); explicit && isImageModel(source) {
+	if source := d.sourceModel(model); explicit && isImageModel(source, ProviderAzureFoundry) {
 		return route{image: true, deployment: deployment, source: source}, nil
 	}
 	p, err := d.deploymentProtocol(ctx, model)
@@ -210,7 +211,7 @@ func (d *AzureFoundryDriver) resolve(ctx context.Context, model string) (route, 
 		return route{}, err
 	}
 	source := d.sourceModel(model)
-	if isImageModel(source) {
+	if isImageModel(source, ProviderAzureFoundry) {
 		return route{image: true, deployment: deployment, source: source}, nil
 	}
 	return route{protocol: p, deployment: deployment, source: source}, nil
@@ -227,7 +228,7 @@ func (d *AzureFoundryDriver) deploymentProtocol(ctx context.Context, model strin
 	}
 	deployment, _ := parseModelID(model)
 	source := d.sourceModel(model)
-	if isClaudeModel(source) {
+	if isClaudeModel(source, ProviderAzureFoundry) {
 		d.setProtocol(deployment, protocolMessages, "")
 		return protocolMessages, nil
 	}
@@ -483,8 +484,9 @@ func (d *AzureFoundryDriver) sameHostLink(link string) (string, error) {
 }
 
 // ListModels returns the project's inference deployments as
-// "deployment::source-model" IDs. It needs Microsoft Entra ID: the project API
-// does not accept resource keys.
+// "deployment::source-model" IDs, with the capability catalogue's modalities and
+// tool support for the source model. It needs Microsoft Entra ID: the project
+// API does not accept resource keys.
 func (d *AzureFoundryDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) ([]AIModel, error) {
 	if d.apiKeyOnly() {
 		return nil, errors.New("listing Microsoft Foundry deployments requires Microsoft Entra ID: the project API accepts Entra tokens only. Set TokenProvider alongside APIKey, or address deployments by ID")
@@ -499,7 +501,7 @@ func (d *AzureFoundryDriver) ListModels(ctx context.Context, _ *ModelSearchPaylo
 			continue
 		}
 		modelType := modelTypeText
-		if isImageModel(deployment.ModelName) {
+		if isImageModel(deployment.ModelName, ProviderAzureFoundry) {
 			modelType = modelTypeImage
 		}
 		model := AIModel{
@@ -509,6 +511,7 @@ func (d *AzureFoundryDriver) ListModels(ctx context.Context, _ *ModelSearchPaylo
 			Provider:    string(ProviderAzureFoundry),
 			Type:        ptr(modelType),
 		}
+		capability.ResolveListingMetadata(deployment.ModelName, ProviderAzureFoundry, nil, nil).Apply(&model)
 		if deployment.ModelVersion != "" {
 			model.Version = ptr(deployment.ModelVersion)
 		}

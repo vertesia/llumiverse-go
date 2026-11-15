@@ -116,8 +116,48 @@ func TestOpenAICompatibleListModels(t *testing.T) {
 	}
 }
 
+// Mirrors the TS OpenAI-compatible listing: embedding and dedicated-endpoint
+// models are left out except file audio, the capability catalogue describes
+// known models, and image input marks a model multimodal.
+func TestOpenAICompatibleListModelsUsesTheCatalogue(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"meta-llama/Llama-4-Scout"},{"id":"nomic-embed-text"},{"id":"gpt-image-1"},
+			{"id":"whisper-large-v3"},{"id":"gpt-realtime"},{"id":"local-model"}]}`))
+	}))
+	defer server.Close()
+	driver, err := NewOpenAICompatibleDriver(OpenAICompatibleOptions{APIKey: "k", Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := driver.ListModels(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, model := range models {
+		ids = append(ids, model.ID)
+	}
+	if got := strings.Join(ids, ","); got != "local-model,meta-llama/Llama-4-Scout,whisper-large-v3" {
+		t.Fatalf("models = %s", got)
+	}
+	local, llama, whisper := models[0], models[1], models[2]
+	if !*llama.ToolSupport || !*llama.IsMultimodal || strings.Join(*llama.InputModalities, ",") != "text,image" || *llama.Type != modelTypeText {
+		t.Fatalf("llama = %+v", llama)
+	}
+	if local.ToolSupport != nil || *local.IsMultimodal || strings.Join(*local.OutputModalities, ",") != "text" {
+		t.Fatalf("local = %+v", local)
+	}
+	if *whisper.Type != modelTypeAudio || strings.Join(*whisper.InputModalities, ",") != "audio" {
+		t.Fatalf("whisper = %+v", whisper)
+	}
+}
+
 // Mirrors the TS model listing test: on OpenAI, dedicated and legacy endpoint
-// families are left out, and unknown ids stay visible.
+// families are left out, and unknown ids stay visible. File audio models such
+// as whisper are listed, as audio models.
 func TestOpenAIListModelsLeavesOutDedicatedEndpoints(t *testing.T) {
 	t.Parallel()
 
@@ -138,7 +178,93 @@ func TestOpenAIListModelsLeavesOutDedicatedEndpoints(t *testing.T) {
 	for _, model := range models {
 		ids = append(ids, model.ID)
 	}
-	if got := strings.Join(ids, ","); got != "gpt-5.1-codex,gpt-5.6,gpt-7-future" {
+	if got := strings.Join(ids, ","); got != "gpt-5.1-codex,gpt-5.6,gpt-7-future,whisper-1" {
+		t.Fatalf("models = %s", got)
+	}
+	if whisper := models[3]; *whisper.Type != modelTypeAudio {
+		t.Fatalf("whisper = %+v", whisper)
+	}
+}
+
+// Mirrors the TS model listing test: executable Codex, pro reasoning and file
+// audio models are kept, embeddings, moderation and video models are not, and
+// the capability catalogue describes each model.
+func TestOpenAIListModelsKeepsExecutableModels(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5.6-codex","owned_by":"system"},{"id":"o1-pro","owned_by":"system"},
+			{"id":"gpt-5-audiovisual","owned_by":"system"},{"id":"text-embedding-3-small","owned_by":"system"},
+			{"id":"gpt-4o-mini-tts","owned_by":"system"},{"id":"gpt-4o-transcribe","owned_by":"system"},
+			{"id":"gpt-audio","owned_by":"system"},{"id":"gpt-image-1","owned_by":"system"},
+			{"id":"omni-moderation-latest","owned_by":"system"},{"id":"sora-3","owned_by":"system"},
+			{"id":"acme-future","owned_by":"system"}]}`))
+	}))
+	defer server.Close()
+	driver, err := NewOpenAIDriver(OpenAICompatibleOptions{APIKey: "k", Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := driver.ListModels(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]AIModel{}
+	var ids []string
+	for _, model := range models {
+		byID[model.ID] = model
+		ids = append(ids, model.ID)
+	}
+	want := "acme-future,gpt-4o-mini-tts,gpt-4o-transcribe,gpt-5-audiovisual,gpt-5.6-codex,gpt-audio,gpt-image-1,o1-pro"
+	if got := strings.Join(ids, ","); got != want {
+		t.Fatalf("models = %s", got)
+	}
+	codex := byID["gpt-5.6-codex"]
+	if *codex.Owner != "openai" || *codex.Type != modelTypeText || !*codex.ToolSupport ||
+		strings.Join(*codex.InputModalities, ",") != "text,image" || strings.Join(*codex.OutputModalities, ",") != "text" {
+		t.Fatalf("codex = %+v", codex)
+	}
+	audio := byID["gpt-audio"]
+	if *audio.Type != modelTypeAudio || *audio.ToolSupport || strings.Join(*audio.OutputModalities, ",") != "text,audio" {
+		t.Fatalf("audio = %+v", audio)
+	}
+	if image := byID["gpt-image-1"]; *image.Type != modelTypeImage || *image.ToolSupport || strings.Join(*image.OutputModalities, ",") != "image" {
+		t.Fatalf("image = %+v", image)
+	}
+	// The catalogue does not know an unknown model: text in and out, tool support unknown.
+	if unknown := byID["acme-future"]; unknown.ToolSupport != nil || strings.Join(*unknown.InputModalities, ",") != "text" {
+		t.Fatalf("unknown = %+v", unknown)
+	}
+}
+
+// Mirrors the TS model listing test: image aliases, snapshots, qualified IDs and
+// future generations are listed as image models, DALL-E is not.
+func TestOpenAIListModelsListsImageModelsWithoutDallE(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"gpt-image-2.5-sunburst"},{"id":"gpt-image-2.5-flare-2026-09-08"},
+			{"id":"openai/GPT-IMAGE-3"},{"id":"chatgpt-image-latest"},{"id":"dall-e-2"},{"id":"dall-e-3"}]}`))
+	}))
+	defer server.Close()
+	driver, err := NewOpenAIDriver(OpenAICompatibleOptions{APIKey: "k", Endpoint: server.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := driver.ListModels(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, model := range models {
+		ids = append(ids, model.ID)
+		if *model.Type != modelTypeImage || strings.Join(*model.OutputModalities, ",") != "image" {
+			t.Fatalf("model = %+v", model)
+		}
+	}
+	if got := strings.Join(ids, ","); got != "chatgpt-image-latest,gpt-image-2.5-flare-2026-09-08,gpt-image-2.5-sunburst,openai/GPT-IMAGE-3" {
 		t.Fatalf("models = %s", got)
 	}
 }

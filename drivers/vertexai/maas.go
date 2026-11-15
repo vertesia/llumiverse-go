@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"regexp"
 	"strings"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	openaidriver "github.com/vertesia/llumiverse-go/drivers/openai"
 )
 
@@ -71,12 +71,11 @@ type vertexMaaSRequest struct {
 	extraBody        map[string]any
 }
 
-var modelFamilyPattern = regexp.MustCompile(`^[a-z]+`)
-
 // vertexMaaSFamily is the model family used to route models that are not in
-// the catalogue: the leading letters of the ID (glm, deepseek, qwen, llama...).
+// the MaaS catalogue: the capability catalogue's family of the model (glm,
+// deepseek, qwen, llama...), as in the TS client.
 func vertexMaaSFamily(model string) string {
-	return modelFamilyPattern.FindString(strings.ToLower(model))
+	return capability.ResolveProfile(model, ProviderVertexAI).Family
 }
 
 // parseVertexModelPath splits "locations/{region}/publishers/{publisher}/models/{model}"

@@ -13,6 +13,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
 )
 
@@ -650,7 +651,8 @@ func convertGeminiFunctionPartsToText(contents []geminiContent) []geminiContent 
 }
 
 // ListModels lists published Google and Anthropic models for the project/region,
-// optionally filtering by name substring, and returns them sorted by ID.
+// optionally filtering by name substring, and returns them sorted by ID, with the
+// capability catalogue's modalities and tool support.
 func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayload) ([]AIModel, error) {
 	headers, err := d.authHeaders(ctx)
 	if err != nil {
@@ -708,16 +710,16 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 				name = short
 			}
 			listed := AIModel{
-				ID:          model.Name,
-				Name:        name,
-				Provider:    string(ProviderVertexAI),
-				Owner:       ptr(item.publisher),
-				Type:        ptr(ModelType("text")),
-				CanStream:   ptr(true),
-				ToolSupport: ptr(true),
+				ID:        model.Name,
+				Name:      name,
+				Provider:  string(ProviderVertexAI),
+				Owner:     ptr(item.publisher),
+				Type:      ptr(ModelType("text")),
+				CanStream: ptr(true),
 			}
+			capability.ResolveListingMetadata(model.Name, ProviderVertexAI, nil, nil).Apply(&listed)
 			if isGeminiOmniVideoModel(short) {
-				listed.Type, listed.CanStream, listed.ToolSupport = ptr(ModelType("video")), ptr(false), ptr(false)
+				listed.Type, listed.CanStream = ptr(ModelType("video")), ptr(false)
 			} else if item.publisher == "google" && isGeminiFileAudioModel(short) {
 				listed.Type, listed.CanStream = ptr(ModelType("audio")), ptr(false)
 			}

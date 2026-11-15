@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/openai/openai-go/v3/option"
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/common"
 	"github.com/vertesia/llumiverse-go/wire"
 )
@@ -23,31 +24,27 @@ import (
 const openAIMaxAudioBytes = 25_000_000
 
 var (
-	openAIRealtimePattern      = regexp.MustCompile(`realtime|live`)
-	openAITranscriptionPattern = regexp.MustCompile(`whisper|transcribe`)
-	openAISpeechPattern        = regexp.MustCompile(`(?:^|[-_.])tts(?:[-_.]|$)`)
-	openAIAudioPattern         = regexp.MustCompile(`(?:^|[-_.])audio(?:[-_.]|$)`)
-	openAITTS1Pattern          = regexp.MustCompile(`^tts-1(?:-|$)`)
+	openAIRealtimePattern = regexp.MustCompile(`(?i)realtime|live`)
+	openAITTS1Pattern     = regexp.MustCompile(`^tts-1(?:-|$)`)
 )
 
 // openAIAudioTask classifies the file-audio models served outside text
-// generation: "transcription" (whisper, *-transcribe), "speech" (tts) and
-// "understanding" (audio chat models). Realtime models are not file audio.
+// generation by their capability catalogue family, as the TS client does:
+// "transcription" (whisper, *-transcribe), "speech" (tts) and "understanding"
+// (audio chat models). Realtime and Live models are not file audio.
 func openAIAudioTask(model string) string {
-	name := strings.ToLower(model)
-	if i := strings.LastIndex(name, "::"); i >= 0 {
-		name = name[i+2:]
-	}
-	name = shortResourceName(name)
-	switch {
-	case openAIRealtimePattern.MatchString(name) || strings.Contains(name, "native-audio"):
+	if openAIRealtimePattern.MatchString(model) {
 		return ""
-	case openAITranscriptionPattern.MatchString(name):
-		return "transcription"
-	case openAISpeechPattern.MatchString(name):
-		return "speech"
-	case openAIAudioPattern.MatchString(name):
+	}
+	source := model
+	if i := strings.LastIndex(source, "::"); i >= 0 {
+		source = source[i+2:]
+	}
+	switch family := capability.ResolveProfile(source, ProviderOpenAI).Family; family {
+	case "audio":
 		return "understanding"
+	case "transcription", "speech":
+		return family
 	}
 	return ""
 }

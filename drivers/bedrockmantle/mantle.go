@@ -12,6 +12,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/vertesia/llumiverse-go/capability"
 	internalclaude "github.com/vertesia/llumiverse-go/drivers/internal/claude"
 	"github.com/vertesia/llumiverse-go/drivers/openai"
 )
@@ -226,8 +227,8 @@ type mantleModel struct {
 	ID string `json:"id"`
 }
 
-// ListModels lists the Mantle models the driver can route, sorted by ID. Embedding models and models of families
-// without a known protocol are left out.
+// ListModels lists the Mantle models the driver can route, sorted by ID, with the capability catalogue's modalities
+// and tool support. Embedding models and models of families without a known protocol are left out.
 func (d *BedrockMantleDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) ([]AIModel, error) {
 	endpoint, err := joinEndpoint(d.v1, "models")
 	if err != nil {
@@ -241,21 +242,23 @@ func (d *BedrockMantleDriver) ListModels(ctx context.Context, _ *ModelSearchPayl
 	}
 	models := make([]AIModel, 0, len(response.Data))
 	for _, model := range response.Data {
-		if strings.Contains(strings.ToLower(model.ID), "embed") {
+		if capability.IsEmbeddingModel(capability.Listing{ID: model.ID}, ProviderBedrockMantle) {
 			continue
 		}
 		if _, ok := ModelProtocol(model.ID); !ok {
 			continue
 		}
 		owner := modelOwner(model.ID)
-		models = append(models, AIModel{
+		aiModel := AIModel{
 			ID:        model.ID,
 			Name:      modelDisplayName(model.ID, owner),
 			Provider:  string(ProviderBedrockMantle),
 			Owner:     ptr(owner),
 			Type:      ptr(modelTypeText),
 			CanStream: ptr(true),
-		})
+		}
+		capability.ResolveListingMetadata(model.ID, ProviderBedrockMantle, nil, nil).Apply(&aiModel)
+		models = append(models, aiModel)
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil

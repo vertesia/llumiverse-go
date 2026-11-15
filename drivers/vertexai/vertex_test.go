@@ -1125,6 +1125,22 @@ func TestVertexListModels(t *testing.T) {
 	if len(models) != 6 || models[3].ID != "publishers/anthropic/models/claude-a" {
 		t.Fatalf("models = %#v", models)
 	}
+	// The capability catalogue describes each listed model.
+	byID := map[string]AIModel{}
+	for _, model := range models {
+		byID[model.ID] = model
+	}
+	gemini, claude := byID["publishers/google/models/gemini-b"], byID["publishers/anthropic/models/claude-a"]
+	if strings.Join(*gemini.InputModalities, ",") != "text,image,video,audio" || strings.Join(*gemini.OutputModalities, ",") != "text" || !*gemini.ToolSupport {
+		t.Fatalf("gemini = %+v", gemini)
+	}
+	if strings.Join(*claude.InputModalities, ",") != "text,image" || !*claude.ToolSupport {
+		t.Fatalf("claude = %+v", claude)
+	}
+	imagen := byID["publishers/google/models/imagen-3.0-fast-generate-001"]
+	if strings.Join(*imagen.OutputModalities, ",") != "image" || *imagen.ToolSupport {
+		t.Fatalf("imagen = %+v", imagen)
+	}
 }
 
 func TestVertexGeminiStreamParsesSSE(t *testing.T) {

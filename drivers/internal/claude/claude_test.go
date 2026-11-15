@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -200,7 +201,7 @@ func TestAnthropicModelsValidationUnsupportedEmbeddingsAndErrors(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/v1/models":
-			_, _ = w.Write([]byte(`{"data":[{"id":"claude-3-5-sonnet","display_name":"Claude 3.5 Sonnet"},{"id":"claude-3-haiku"}]}`))
+			_, _ = w.Write([]byte(`{"data":[{"id":"claude-3-5-sonnet","display_name":"Claude 3.5 Sonnet"},{"id":"claude-3-haiku"},{"id":"claude-3-5-haiku-20241022"}]}`))
 		case "/v1/messages":
 			http.Error(w, "overloaded", http.StatusServiceUnavailable)
 		default:
@@ -220,8 +221,17 @@ func TestAnthropicModelsValidationUnsupportedEmbeddingsAndErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 2 || models[0].ID != "claude-3-5-sonnet" || models[0].Name != "Claude 3.5 Sonnet" || models[1].Name != "claude-3-haiku" {
+	if len(models) != 3 || models[0].ID != "claude-3-5-sonnet" || models[0].Name != "Claude 3.5 Sonnet" || models[1].Name != "claude-3-haiku" {
 		t.Fatalf("models = %#v", models)
+	}
+	// The capability catalogue describes each model: Claude 3.5 Haiku takes no images.
+	sonnet, haiku := models[0], models[2]
+	if !*sonnet.ToolSupport || !*sonnet.IsMultimodal || strings.Join(*sonnet.InputModalities, ",") != "text,image" ||
+		strings.Join(*sonnet.OutputModalities, ",") != "text" {
+		t.Fatalf("sonnet = %#v", sonnet)
+	}
+	if !*haiku.ToolSupport || *haiku.IsMultimodal || strings.Join(*haiku.InputModalities, ",") != "text" {
+		t.Fatalf("haiku = %#v", haiku)
 	}
 	if err := driver.ValidateConnection(context.Background()); err != nil {
 		t.Fatal(err)
