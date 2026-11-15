@@ -86,19 +86,21 @@ func bedrockModalities(model string) (input, output Modalities) {
 		bedrockFamilyVersionGTE(model, "google.gemma-", 4, 0)
 	// AWS lists Voxtral with text input only, so it is described as a text model.
 	audio := strings.Contains(model, "nova-sonic") || strings.Contains(model, "google.gemma-4-e2b")
-	return Modalities{
+	input = Modalities{
 		Text:  flag(!strings.Contains(model, "nova-sonic-v1")),
 		Image: flag(image),
 		Video: flag(video),
 		Audio: flag(audio),
 		Embed: no,
-	}, Modalities{
+	}
+	output = Modalities{
 		Text:  yes,
 		Image: no,
 		Video: no,
 		Audio: flag(strings.Contains(model, "nova-sonic")),
 		Embed: no,
 	}
+	return input, output
 }
 
 var (
