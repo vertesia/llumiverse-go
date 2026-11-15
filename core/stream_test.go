@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 )
 
@@ -334,5 +335,65 @@ func TestChannelStreamKeepsUsageReportedBeforeAnError(t *testing.T) {
 	usage := stream.Completion().TokenUsage
 	if usage == nil || Count(usage.Prompt) != 10 || Count(usage.PromptCached) != 4 || Count(usage.Result) != 2 || Count(usage.Total) != 12 {
 		t.Fatalf("TokenUsage = %#v", usage)
+	}
+}
+
+// Mirrors the TS client's usage tests for the newer fields: cache writes by retention, generated
+// image tokens, provider cost and hosted tool usage all reach the completion.
+func TestChannelStreamMergesNewerUsageFields(t *testing.T) {
+	t.Parallel()
+
+	imageGeneration := &ToolUsage{ImageGeneration: &ToolTokenUsage{Prompt: Tokens(5), Result: Tokens(7), Total: Tokens(12)}}
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(10), PromptCached: Tokens(4), PromptNew: Tokens(3), Result: Tokens(1)}}}
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{
+		Prompt:              Tokens(10),
+		PromptCacheWrite:    Tokens(3),
+		PromptCacheWrite1H:  Tokens(2),
+		PromptCacheWrite12H: Tokens(1),
+		Result:              Tokens(2),
+		ResultImage:         Tokens(2),
+		ProviderCostUsd:     Ptr(0.25),
+		ToolUsage:           imageGeneration,
+	}}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	want := &ExecutionTokenUsage{
+		Prompt:              Tokens(10),
+		PromptCached:        Tokens(4),
+		PromptCacheWrite:    Tokens(3),
+		PromptCacheWrite1H:  Tokens(2),
+		PromptCacheWrite12H: Tokens(1),
+		PromptNew:           Tokens(3),
+		Result:              Tokens(2),
+		ResultImage:         Tokens(2),
+		Total:               Tokens(12),
+		ProviderCostUsd:     Ptr(0.25),
+		ToolUsage:           imageGeneration,
+	}
+	if got := stream.Completion().TokenUsage; !reflect.DeepEqual(got, want) {
+		t.Fatalf("TokenUsage = %#v", got)
+	}
+}
+
+// Mirrors the TS client's "keeps hosted tool usage reported without token counts, without
+// inventing zero counts".
+func TestChannelStreamKeepsToolUsageWithoutTokenCounts(t *testing.T) {
+	t.Parallel()
+
+	webSearch := &ToolUsage{WebSearchRequests: Ptr(2.0)}
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewTextResult("answer")}}}
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{ToolUsage: webSearch}}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.Completion().TokenUsage; !reflect.DeepEqual(got, &ExecutionTokenUsage{ToolUsage: webSearch}) {
+		t.Fatalf("TokenUsage = %#v", got)
 	}
 }

@@ -229,6 +229,9 @@ func mergeStreamResults(dst []CompletionResult, src []CompletionResult) []Comple
 // mergeStreamUsage folds a usage delta into the running total. Prompt/Result/Total
 // are taken as the running maximum (providers may resend cumulative counts), while
 // the cache-related fields are overwritten when the delta reports a nonzero value.
+// Hosted tool usage is reported whole, with or without token counts, so the
+// latest report replaces it; a delta carrying only tool usage leaves the token
+// counts unset rather than inventing zeros.
 func mergeStreamUsage(dst *ExecutionTokenUsage, src *ExecutionTokenUsage) *ExecutionTokenUsage {
 	if src == nil {
 		return dst
@@ -244,6 +247,7 @@ func mergeStreamUsage(dst *ExecutionTokenUsage, src *ExecutionTokenUsage) *Execu
 		{&dst.PromptCached, &src.PromptCached},
 		{&dst.PromptCacheWrite, &src.PromptCacheWrite},
 		{&dst.PromptCacheWrite1H, &src.PromptCacheWrite1H},
+		{&dst.PromptCacheWrite12H, &src.PromptCacheWrite12H},
 		{&dst.PromptNew, &src.PromptNew},
 		{&dst.ResultImage, &src.ResultImage},
 		{&dst.ProviderCostUsd, &src.ProviderCostUsd},
@@ -251,6 +255,9 @@ func mergeStreamUsage(dst *ExecutionTokenUsage, src *ExecutionTokenUsage) *Execu
 		if Count(*field.src) != 0 {
 			*field.dst = *field.src
 		}
+	}
+	if src.ToolUsage != nil {
+		dst.ToolUsage = src.ToolUsage
 	}
 	return dst
 }

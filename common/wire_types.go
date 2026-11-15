@@ -41,6 +41,8 @@ type (
 	PromptCacheDiagnostic = wire.PromptCacheDiagnostic
 	// ToolUsage is usage billed apart from the main model: hosted tools and auxiliary models.
 	ToolUsage = wire.ToolUsage
+	// ToolTokenUsage is the token usage of one hosted tool or auxiliary model in ToolUsage.
+	ToolTokenUsage = wire.ToolTokenUsage
 	// AudioResult is a file-based audio result: a durable object URI and its media details.
 	AudioResult = wire.AudioResult
 )
