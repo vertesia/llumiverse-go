@@ -1111,7 +1111,7 @@ func TestVertexListModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	models, err := driver.ListModels(context.Background(), &ModelSearchPayload{Text: ptr("gemini")})
+	models, err := driver.ListModels(context.Background(), &ModelSearchPayload{Text: ptr("gemini-b")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1122,7 +1122,7 @@ func TestVertexListModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 2 || models[0].ID != "publishers/anthropic/models/claude-a" {
+	if len(models) != 6 || models[3].ID != "publishers/anthropic/models/claude-a" {
 		t.Fatalf("models = %#v", models)
 	}
 }

@@ -118,6 +118,12 @@ func isListedVertexPublisherModel(publisher string, name string) bool {
 	return false
 }
 
+// vertexAdditionalPublisherModels are listed although the publisher listing does
+// not return them.
+var vertexAdditionalPublisherModels = map[string][]string{
+	"google": append([]string{"imagen-3.0-fast-generate-001"}, geminiOmniVideoModels...),
+}
+
 // hasVertexGlobalListing reports Google models also listed under the global
 // location: Gemini 2.5 and later.
 func hasVertexGlobalListing(publisher string, name string) bool {

@@ -95,7 +95,12 @@ func TestVertexListingFiltersSpecialPurposeModels(t *testing.T) {
 		"locations/global/publishers/google/models/gemini-2.5-flash",
 		"locations/global/publishers/google/models/gemini-4-argon",
 		"locations/global/publishers/google/models/gemini-nano-banana-2.1",
+		// Listing supplements: Omni video runs only in global.
+		"locations/global/publishers/google/models/gemini-omni-1.1-flash-preview",
+		"locations/global/publishers/google/models/gemini-omni-1.2-flash",
+		"locations/global/publishers/google/models/gemini-omni-flash-preview",
 		"publishers/google/models/gemini-2.5-flash",
+		"publishers/google/models/imagen-3.0-fast-generate-001",
 		"publishers/google/models/imagen-4.0-generate-001",
 	}
 	if strings.Join(ids, ",") != strings.Join(want, ",") {

@@ -89,6 +89,7 @@ var (
 	newTextResult                 = common.NewTextResult
 	newImageResult                = common.NewImageResult
 	newThoughtsResult             = common.NewThoughtsResult
+	newVideoResult                = common.NewVideoResult
 	leaseCompletionStream         = core.LeaseCompletionStream
 	tokens                        = common.Tokens
 	toolInputObject               = common.ToolInputObject

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -163,6 +164,9 @@ type vertexImagenPrompt struct {
 // models get an Imagen predict prompt, Claude partner models reuse the shared
 // Claude prompt format, and everything else is formatted as a Gemini prompt.
 func (d *VertexAIDriver) CreatePrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (any, error) {
+	if isGeminiOmniVideoModel(options.Model) {
+		return formatOmniVideoPrompt(ctx, segments, options)
+	}
 	if isVertexImagenModel(options.Model) {
 		return formatVertexImagenPrompt(ctx, segments, options)
 	}
@@ -331,6 +335,9 @@ func (d *VertexAIDriver) Stream(ctx context.Context, segments []PromptSegment, o
 // requestTextCompletion routes a non-streaming request by model to the Imagen,
 // Claude, or Gemini handler, type-asserting the prompt produced by CreatePrompt.
 func (d *VertexAIDriver) requestTextCompletion(ctx context.Context, prompt any, options ExecutionOptions) (*Completion, error) {
+	if isGeminiOmniVideoModel(options.Model) {
+		return d.requestOmniVideo(ctx, prompt.(omniVideoPrompt), options)
+	}
 	if isVertexImagenModel(options.Model) {
 		return d.requestVertexImagen(ctx, prompt.(vertexImagenPrompt), options)
 	}
@@ -344,6 +351,9 @@ func (d *VertexAIDriver) requestTextCompletion(ctx context.Context, prompt any, 
 // handed to requestVertexClaudeStream; Gemini models use streamGenerateContent
 // with alt=sse, chunks are decoded, and a finalizer rebuilds the conversation.
 func (d *VertexAIDriver) requestTextCompletionStream(ctx context.Context, prompt any, options ExecutionOptions) (CompletionStream, error) {
+	if isGeminiOmniVideoModel(options.Model) {
+		return nil, d.formatError(newOmniRequestError("Gemini Omni video does not support streaming"), options.Model, "stream")
+	}
 	if isVertexImagenModel(options.Model) {
 		return nil, errors.New("gemini enterprise agent platform imagen models do not support streaming")
 	}
@@ -638,7 +648,16 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 		if err := doJSON(ctx, d.client, http.MethodGet, endpoint, headers, nil, &response); err != nil {
 			continue
 		}
-		for _, model := range append(response.PublisherModels, response.Models...) {
+		listedModels := append(response.PublisherModels, response.Models...)
+		for _, additional := range vertexAdditionalPublisherModels[item.publisher] {
+			// Models the publisher listing does not return.
+			listedModels = append(listedModels, struct {
+				Name        string `json:"name"`
+				DisplayName string `json:"displayName"`
+				VersionID   string `json:"versionId"`
+			}{Name: "publishers/" + item.publisher + "/models/" + additional})
+		}
+		for _, model := range listedModels {
 			if params != nil && stringValue(params.Text) != "" && !strings.Contains(strings.ToLower(model.Name), strings.ToLower(*params.Text)) {
 				continue
 			}
@@ -661,7 +680,10 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 				CanStream:   ptr(true),
 				ToolSupport: ptr(true),
 			}
-			if item.publisher == "google" && isGeminiWithoutRegionalEndpoints(short) {
+			if isGeminiOmniVideoModel(short) {
+				listed.Type, listed.CanStream, listed.ToolSupport = ptr(ModelType("video")), ptr(false), ptr(false)
+			}
+			if item.publisher == "google" && (isGeminiWithoutRegionalEndpoints(short) || isGeminiOmniVideoModel(short)) {
 				// Models without regional endpoints are listed once, under global.
 				listed.ID, listed.Name = "locations/global/"+model.Name, "Global "+short
 				models = append(models, listed)
@@ -676,7 +698,7 @@ func (d *VertexAIDriver) ListModels(ctx context.Context, params *ModelSearchPayl
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-	return models, nil
+	return slices.CompactFunc(models, func(a, b AIModel) bool { return a.ID == b.ID }), nil
 }
 
 // ValidateConnection verifies that OAuth credentials can be resolved.
@@ -1329,6 +1351,9 @@ func (d *VertexAIDriver) tokenSource(ctx context.Context) (oauth2.TokenSource, e
 // models keep the status-based classification, passing errors without an HTTP
 // status through. Either way a 403 naming Cloud Storage gets the bucket hint.
 func (d *VertexAIDriver) formatError(err error, model string, operation string) error {
+	if isGeminiOmniVideoModel(model) {
+		return formatOmniVideoError(err, model, operation)
+	}
 	if !isClaudeModel(model) {
 		return formatGeminiError(err, model, operation)
 	}
