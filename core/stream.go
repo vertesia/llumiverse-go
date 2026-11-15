@@ -21,6 +21,7 @@ type channelStream struct {
 	once       sync.Once                         // guards Close so closeFn runs at most once
 	finalOnce  sync.Once                         // guards finalizeCompletion so it runs at most once
 	finalizer  func(*ExecutionResponse)          // optional driver hook run after finalization
+	validate   func(*ExecutionResponse)          // result-schema validation, run after the finalizer
 	start      time.Time                         // stream start, used to compute ExecutionTime
 	tools      map[string]*streamToolAccumulator // streamed tool calls keyed by tool ID
 	toolOrder  []string                          // tool IDs in first-seen order, to keep output stable
@@ -182,6 +183,9 @@ func (s *channelStream) finalizeCompletion() {
 		}
 		if s.finalizer != nil {
 			s.finalizer(s.completion)
+		}
+		if s.validate != nil && s.finalErr == nil {
+			s.validate(s.completion)
 		}
 	})
 }

@@ -130,6 +130,18 @@ var (
 	NewAudioResult    = common.NewAudioResult
 )
 
+// Result validation, re-exported from package core.
+const (
+	ResultValidationCodeJSON   = core.ResultValidationCodeJSON
+	ResultValidationCodeSchema = core.ResultValidationCodeSchema
+)
+
+// ValidateResult checks completion results against a JSON Schema; see core.ValidateResult. Execute and Stream
+// already apply it when ExecutionOptions.ResultSchema is set.
+func ValidateResult(results []CompletionResult, schema map[string]any) ([]CompletionResult, *ResultValidationError) {
+	return core.ValidateResult(results, schema)
+}
+
 // Ptr returns a pointer to v, for the optional fields of the generated types.
 func Ptr[T any](v T) *T {
 	return &v

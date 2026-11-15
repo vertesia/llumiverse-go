@@ -33,8 +33,8 @@ A commit that spans several areas appears in each area's table with that area's 
 
 ## Result (parity point `73dfc90`)
 
-Of the 140 commits, 93 were ported in at least one area, 12 were already covered, and 35 were
-skipped. Counted per area row (229 rows), the result is 146 ported, 32 covered and 51 skipped.
+Of the 140 commits, 95 were ported in at least one area, 12 were already covered, and 33 were
+skipped. Counted per area row (229 rows), the result is 148 ported, 32 covered and 49 skipped.
 
 ### Known differences that remain
 
@@ -43,9 +43,13 @@ mistake them for missed commits.
 
 - **No logger.** The Go drivers do not log, so log-only changes (refusal and content-filter logs,
   option warnings, log levels) are skipped.
-- **No capability catalogue or option metadata**, and no result-schema validation. Catalogue rows
-  are skipped. Routing behaviour that the catalogue drives is ported inside each driver, by model
-  family and version.
+- **No capability catalogue or option metadata.** Catalogue rows are skipped. Routing behaviour that
+  the catalogue drives is ported inside each driver, by model family and version.
+- **Result validation** uses a JSON Schema library in place of AJV (`core/validation.go`). Coercion,
+  defaults and removal of failing additional properties are a pass before validation that follows
+  properties, patternProperties, additionalProperties, items, allOf and local `$ref`, but not anyOf,
+  oneOf, not or if/then/else. Every error is reported, sorted by path, where AJV stops at the first.
+  Error texts follow AJV's for the common keywords.
 - **Bedrock Mantle is not a provider.** Callers with a Bedrock API key can point the
   OpenAI-compatible driver at its endpoint.
 - **Claude on Bedrock:** application inference profiles, custom models and provisioned throughput
@@ -86,6 +90,7 @@ mistake them for missed commits.
 | `c71fb9b` | 2026-08-06 | feat: preserve native thinking output across providers (#532) | ported | Core part: streamed thoughts fragments collapse into one thoughts result kept apart from the answer text (`CompletionResultsToText` and `NormalizeJSONResult` leave it alone); `TestChannelStreamKeepsThoughtsTypedAndMediaDiscrete`. Go has no flattened string iterator, so the live-preview newline does not apply. Driver follow-up: the Claude driver streams thinking deltas as text results. |
 | `105b57f` | 2026-08-12 | fix: harden model catalog resolution (#579) | skip | Model catalogue, model directory and option metadata; Go has no capability catalogue. Driver routing is reviewed in the driver areas. |
 | `a096147` | 2026-08-14 | fix: make driver cleanup in-flight safe (#587) | ported | `channelStream.Close` drains unread chunks so the producing goroutine never blocks on a send; `core.LeaseCompletionStream` applies `DriverOptions.StreamStartTimeout` (an unread stream is closed and Recv returns `core.ErrCompletionStreamNotConsumed`); `TestChannelStreamCloseReleasesAnInFlightProducer`, `TestLeaseCompletionStream*`. Operation leases and destroy() have no Go counterpart; the new TS default HTTP timeouts are not applied (Go sets none unless configured). Driver follow-up: wrap Stream results with LeaseCompletionStream. |
+| `87c2454` | 2026-08-15 | fix(core): stop rejecting valid completions after a schema's first use (#592) | ported | Result-schema validation (`core.ValidateResult`, applied by Execute and Stream) compiles every schema in its own compiler, so a schema seen again, or edited under the same `$id`, validates against its current definition. TestValidateResultRepeatedAndEditedSchemaWithSameID. |
 | `a7c34be` | 2026-08-18 | fix: carry tool-result attachments to OpenAI Responses and Gemini (#593) | skip | Core part is the generic conversation walker for OpenAI Responses input_image / input_file blocks; Go retention is typed per driver (drivers/openai/conversation.go, OpenAI area). |
 | `ddb1416` | 2026-08-20 | feat(vertexai): add Gemini Omni video generation (#600) | covered | Core part: video results and `ExecutionOptions.OutputStorageURI` exist (wire types, foundation) and the accumulator keeps media results discrete; `TestChannelStreamKeepsThoughtsTypedAndMediaDiscrete`. |
 | `4627464` | 2026-08-25 | feat: capture provider service tiers (#607) | ported | The accumulator copies `CompletionChunk.ServiceTier` to `Completion.ServiceTier`; `TestChannelStreamCapturesServiceTier`. |
@@ -98,10 +103,11 @@ mistake them for missed commits.
 | `cf780e4` | 2026-09-28 | feat: report one-hour cache writes and provider-reported cost in token usage (#697) | covered | Core part: the stream usage merge already carried prompt_cache_write_1h, result_image and provider_cost_usd; `TestChannelStreamMergesNewerUsageFields`. |
 | `08bc093` | 2026-10-02 | [Backport main] fix: normalize provider errors before logging (#732) | covered | Go has no logger: `ExecuteWithPrompt` and `StreamWithPrompt` normalize provider errors and never log prompts. |
 | `6003a78` | 2026-10-09 | fix: drop empty streamed tool arguments on a length stop (#756) | ported | `FinalizeStreamingToolUse` drops a call with empty arguments on a length stop; `TestFinalizeStreamingToolUse`. |
-| `e449750` | 2026-10-13 | [Backport main] fix: cap total inline Gemini media per request, log result validation failures at info (#769) | skip | Core part changes the log level of result validation failures; Go has no logger or result validation. The Gemini inline media cap is in the Vertex AI area. |
+| `e449750` | 2026-10-13 | [Backport main] fix: cap total inline Gemini media per request, log result validation failures at info (#769) | skip | Core part changes the log level of result validation failures; Go has no logger (the failure is on `Completion.Error`). The Gemini inline media cap is in the Vertex AI area. |
 | `657ff94` | 2026-10-14 | feat(claude): append-only tool changes, Bedrock Claude on the Messages API (#779) | ported | Core part: `core.ParseClaudeVersion` / `core.ClaudeVersion` parse the fable and mythos families, dotted minors and Mythos Preview like the TS client; `TestClaudeModelVersionHelpers`. Conversation meta is typed in Go conversations and Go finalizers cannot fail. supportsMidConversationToolChanges and supportsClaudeForcedToolChoice belong to the Claude area. |
 | `3e94ace` | 2026-10-26 | fix: classify errors raised while building a prompt (#822) | ported | CreatePrompt failures become a LlumiverseError with execute or stream context, keeping classified errors and the caller's cancellation; `TestPromptCreationErrorsAreClassified`. The Omni video part is in the Vertex AI area. |
 | `77a9744` | 2026-10-29 | fix: report the provider's stop when it cuts a response off mid tool call (#835) | ported | Core part: `common.IsCutOffFinishReason` (re-exported from core) and `core.IsJSONObjectText`; `FinalizeStreamingToolUse` treats length, refusal and content-filter stops alike and only the last call can be cut off; `TestFinalizeStreamingToolUseAfterACutOffStop`. |
+| `b485719` | 2026-11-06 | fix(core): cache compiled result-schema validators by content (#864) | ported | Validators are cached by schema JSON, at most 1,000 schemas and 500,000 characters, a larger schema cached alone; coerced, defaulted and pruned data and AJV-style errors are the same on every call and across concurrent calls. TestValidatorCacheBounds, TestValidateResultCoercesDefaultsAndPrunes, TestValidateResultReportsAJVStyleErrors, TestValidateResultConcurrentCallsStaySeparate. |
 | `b3cdb45` | 2026-11-13 | feat(openai): update openai to 7.56.0 and map new usage, tool usage and residency (#893) | ported | Core part: the stream usage merge carries prompt_cache_write_12h and tool_usage (whole, without inventing token counts); `common.ToolTokenUsage` alias; `TestChannelStreamMergesNewerUsageFields`, `TestChannelStreamKeepsToolUsageWithoutTokenCounts`. |
 
 ## Claude (Anthropic, Claude on Vertex AI, Claude on Bedrock)
@@ -275,7 +281,7 @@ mistake them for missed commits.
 | `a3ac772` | 2026-09-30 | fix: clarify Vertex AI storage permission denials (#709) | ported | Cloud Storage permission denials carry the bucket hint (TestVertexStorageDenialAddsBucketHint). |
 | `f157a07` | 2026-10-05 | fix: preserve generated-image metadata and reject empty output (#735) | ported | Imagen results keep the returned MIME type and empty output is an error (TestImagenOutputMetadata). |
 | `98f733a` | 2026-10-07 | [Backport main] fix(vertexai): support Nano Banana IDs and exclude Live models (#745) | ported | Nano Banana is routed to global and Live models are not listed (TestGeminiEndpointRouting, TestVertexListingFiltersSpecialPurposeModels). |
-| `124d400` | 2026-10-08 | fix: cap inline Gemini media at 100 MB and quiet AJV unknown formats (#750) | ported | Inline media is capped at 100 MB per file as a 413 (TestGeminiInlineMediaPerFileLimit); the AJV part has no Go counterpart. |
+| `124d400` | 2026-10-08 | fix: cap inline Gemini media at 100 MB and quiet AJV unknown formats (#750) | ported | Inline media is capped at 100 MB per file as a 413 (TestGeminiInlineMediaPerFileLimit). The AJV part holds for Go result validation: unknown formats are ignored (TestValidateResultIgnoresUnregisteredFormats). |
 | `f61c36b` | 2026-10-12 | [Backport main] fix: align provider options, limits, and input handling (#764) | ported | Imagen option names and output options follow the TS client (TestImagenOptionSerialization). |
 | `e449750` | 2026-10-13 | [Backport main] fix: cap total inline Gemini media per request, log result validation failures at info (#769) | ported | Inline media is capped at 150 MB per request, history included (TestGeminiInlineMediaPerRequestLimit); the logging part has no Go counterpart. |
 | `28b35a1` | 2026-10-13 | feat: log provider refusals and content-filter stops (#772) | skip | Logging only; the library has no logger, and refusals already surface as classified finish-reason errors. |
@@ -323,7 +329,6 @@ New `drivers/azurefoundry` driver.
 | `7e691c6` | 2026-07-24 | chore(deps): update dependency @biomejs/biome to v2.5.5 (#552) | skip | Biome update. |
 | `e8b5b95` | 2026-08-04 | feat(common): define the API contracts as runtime Zod schemas (#565) | covered | API contracts as Zod schemas: covered by the generated wire types (#11); driver edits are TS type refactors. |
 | `d797068` | 2026-08-14 | feat: support xAI image generation (#591) | skip | xAI image generation; no xAI driver in Go. |
-| `87c2454` | 2026-08-15 | fix(core): stop rejecting valid completions after a schema's first use (#592) | skip | AJV validator caching bug; Go does not validate result schemas. |
 | `c6d8566` | 2026-08-28 | feat: add native OpenRouter support (#624) | skip | Native OpenRouter driver; not a provider llumiverse-go has. |
 | `ea82cc9` | 2026-09-08 | chore(deps): update node dependencies (main) (#649) | skip | Dependency update. |
 | `51a9f91` | 2026-09-17 | chore(deps): update dependency openai to v7 (main) (#652) | skip | openai SDK v7 bump (TS SDK typing changes). |
@@ -338,7 +343,6 @@ New `drivers/azurefoundry` driver.
 | `5719e42` | 2026-11-03 | chore(deps): update dependency together-ai to v1 (main) (#856) | skip | TogetherAI SDK. |
 | `63a13aa` | 2026-11-06 | fix(common): emit ModelOptionsSchema through a named type (#861) | covered | Named ModelOptions schema: covered by wire types. |
 | `21c06da` | 2026-11-06 | fix(common): export the OpenAiImageSvgOptions type (#863) | skip | TS type export. |
-| `b485719` | 2026-11-06 | fix(core): cache compiled result-schema validators by content (#864) | skip | AJV validator cache; Go does not validate result schemas. |
 | `d01fb11` | 2026-11-10 | chore(deps): update dependency @biomejs/biome to v2.6.4 (main) (#878) | skip | Biome update. |
 | `f7d2155` | 2026-11-13 | feat(common): publish a JSON Schema document of the common schemas (#895) | covered | JSON Schema document: the source of the generated wire types (#11). |
 | `98ea7a4` | 2026-11-13 | docs: align JSON Schema openness notes with the API contract (#897) | covered | Schema documentation only. |

@@ -1,6 +1,6 @@
 module github.com/vertesia/llumiverse-go
 
-go 1.26.0
+go 1.26.4
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.48.0
@@ -9,9 +9,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/bedrockruntime v1.63.13
 	github.com/aws/smithy-go v1.28.9
 	github.com/joho/godotenv v1.5.1
+	github.com/kaptinlin/jsonrepair v0.4.10
 	github.com/oapi-codegen/runtime v1.9.0
 	github.com/openai/openai-go/v3 v3.99.0
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.3
 	golang.org/x/oauth2 v0.38.0
+	golang.org/x/text v0.42.0
 )
 
 require (
@@ -30,6 +33,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.44.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.52.0 // indirect
 	github.com/coder/websocket v1.8.15 // indirect
+	github.com/go-json-experiment/json v0.0.0-20260601182631-00ed12fed2a6 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/tidwall/gjson v1.20.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect

@@ -144,7 +144,9 @@ type ExecutionOptions struct {
 	// Model is the provider model ID or resource name to invoke.
 	Model string
 	// ResultSchema requests structured JSON output using the provider's native
-	// schema feature when available.
+	// schema feature when available. The completion is validated against it:
+	// on success its content is one JSON result, and on failure Completion.Error
+	// is set and the results are left as the model returned them.
 	ResultSchema map[string]any
 	// ModelOptions carries provider-specific options such as temperature,
 	// max_tokens, stop_sequence, effort, cache controls, or image settings.
@@ -240,7 +242,8 @@ type Completion struct {
 	ToolUse []ToolUse
 	// FinishReason is normalized across providers, for example stop, length, or tool_use.
 	FinishReason string
-	// Error contains structured-output validation errors.
+	// Error is set when the result does not match ExecutionOptions.ResultSchema
+	// (code validation_error) or holds no JSON (code json_error).
 	Error *ResultValidationError
 	// OriginalResponse contains the raw provider response when requested.
 	OriginalResponse any

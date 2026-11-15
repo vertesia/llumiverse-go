@@ -48,9 +48,7 @@ func executeWithPrompt(ctx context.Context, driver Driver, segments []PromptSegm
 	if completion == nil {
 		return nil, errors.New("driver returned nil completion")
 	}
-	if options.ResultSchema != nil && completion.Error == nil && len(completion.ToolUse) == 0 {
-		normalizeJSONResult(completion)
-	}
+	validateCompletion(completion, options)
 	return &ExecutionResponse{
 		Completion:    *completion,
 		Prompt:        debugPrompt(driver, prompt),
@@ -89,6 +87,8 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 	if channel, ok := stream.(*channelStream); ok {
 		// Errors raised while finalizing the stream name the provider and model.
 		channel.errContext = LlumiverseErrorContext{Provider: driver.Provider(), Model: options.Model, Operation: "stream"}
+		// The finished completion is validated against the result schema, after the driver's finalizer.
+		channel.validate = func(response *ExecutionResponse) { validateCompletion(&response.Completion, options) }
 	}
 	if completion := stream.Completion(); completion != nil {
 		if completion.Prompt == nil {

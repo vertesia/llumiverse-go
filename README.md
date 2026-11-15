@@ -35,7 +35,7 @@ names for compatibility, and also serves Claude partner models on the platform.
 
 ## Requirements
 
-- Go 1.26 or newer.
+- Go 1.26.4 or newer.
 - Provider credentials for whichever drivers you use (see
   [`.env.example`](.env.example)).
 
