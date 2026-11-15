@@ -5,18 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 
-	"github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/responses"
-	"github.com/openai/openai-go/shared"
+	"github.com/vertesia/llumiverse-go/core"
 )
+
+// responseItem is one Responses API input item in its JSON shape. Items are kept
+// as JSON objects, as the TS client keeps them, so that output items the request
+// types do not model (reasoning, compaction, image generation calls) round-trip
+// unchanged through the conversation.
+type responseItem = map[string]any
 
 // openAIResponsesPrompt is the prepared Responses API input: the ordered input
 // items plus a flattened Text concatenation used for image-generation prompts.
 type openAIResponsesPrompt struct {
-	Items responses.ResponseInputParam
+	Items []responseItem
 	Text  string
 }
 
@@ -26,12 +30,9 @@ type openAIResponsesPrompt struct {
 // items in order; the concatenated Text is retained for image models. Tool
 // segments require a ToolUseID.
 func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (openAIResponsesPrompt, error) {
-	// Responses uses ordered input items. Keep system and safety material in the
-	// instruction role while preserving user/assistant/tool ordering.
 	prompt := openAIResponsesPrompt{}
-	var system []responses.ResponseInputItemUnionParam
-	var safety []responses.ResponseInputItemUnionParam
-	var others []responses.ResponseInputItemUnionParam
+	var system []responseItem
+	var others []responseItem
 	systemRole := openAIResponsesSystemRole(options.Model)
 	for _, segment := range segments {
 		switch segment.Role {
@@ -41,70 +42,79 @@ func (d *OpenAICompatibleDriver) createResponsesPrompt(ctx context.Context, segm
 			if segment.ToolUseID == "" {
 				return openAIResponsesPrompt{}, errors.New("tool prompt segment requires ToolUseID")
 			}
-			others = append(others, responses.ResponseInputItemParamOfFunctionCallOutput(segment.ToolUseID, segment.Content))
+			others = append(others, responseItem{"type": "function_call_output", "call_id": segment.ToolUseID, "output": segment.Content})
 			continue
 		}
-		parts, text, err := openAIResponseContentParts(ctx, segment, options)
+		parts, err := openAIResponseContentParts(ctx, segment, options)
 		if err != nil {
 			return openAIResponsesPrompt{}, err
 		}
-		if text != "" {
+		if segment.Content != "" {
 			if prompt.Text != "" {
 				prompt.Text += "\n"
 			}
-			prompt.Text += text
+			prompt.Text += segment.Content
 		}
 		if len(parts) == 0 {
 			continue
 		}
 		switch segment.Role {
 		case PromptRoleSystem:
-			system = append(system, responses.ResponseInputItemParamOfMessage(parts, systemRole))
+			system = append(system, responseMessage(systemRole, inputTextParts(parts)))
 		case PromptRoleSafety:
-			safetyParts := make(responses.ResponseInputMessageContentListParam, 0, len(parts))
-			for _, part := range parts {
-				if textValue := part.GetText(); textValue != nil {
-					safetyParts = append(safetyParts, responses.ResponseInputContentParamOfInputText("DO NOT IGNORE - IMPORTANT: "+*textValue))
-				}
+			safety := inputTextParts(parts)
+			for _, part := range safety {
+				part["text"] = "DO NOT IGNORE - IMPORTANT: " + stringValue(part["text"])
 			}
-			if len(safetyParts) > 0 {
-				system = append(system, responses.ResponseInputItemParamOfMessage(safetyParts, systemRole))
+			if len(safety) > 0 {
+				system = append(system, responseMessage(systemRole, safety))
 			}
 		case PromptRoleAssistant:
-			others = append(others, responses.ResponseInputItemParamOfMessage(parts, responses.EasyInputMessageRoleAssistant))
+			others = append(others, responseMessage("assistant", parts))
 		default:
-			others = append(others, responses.ResponseInputItemParamOfMessage(parts, responses.EasyInputMessageRoleUser))
+			others = append(others, responseMessage("user", parts))
 		}
 	}
 	prompt.Items = append(prompt.Items, system...)
 	prompt.Items = append(prompt.Items, others...)
-	prompt.Items = append(prompt.Items, safety...)
 	return prompt, nil
 }
 
-// openAIResponseContentParts builds the typed input-content parts for a segment
-// (input_image parts for files, an input_text part for content) and also returns
-// the segment's text for prompt-text accumulation.
-func openAIResponseContentParts(ctx context.Context, segment PromptSegment, options ExecutionOptions) (responses.ResponseInputMessageContentListParam, string, error) {
-	// openai-go models Responses content as a union; build typed parts rather
-	// than marshaling maps so SDK validation catches shape drift.
-	parts := make(responses.ResponseInputMessageContentListParam, 0, len(segment.Files)+1)
+// responseMessage builds an input message item from content parts.
+func responseMessage(role string, parts []responseItem) responseItem {
+	content := make([]any, 0, len(parts))
+	for _, part := range parts {
+		content = append(content, part)
+	}
+	return responseItem{"type": "message", "role": role, "content": content}
+}
+
+// inputTextParts keeps only the input_text parts, which is all system messages accept.
+func inputTextParts(parts []responseItem) []responseItem {
+	out := make([]responseItem, 0, len(parts))
+	for _, part := range parts {
+		if part["type"] == "input_text" {
+			out = append(out, part)
+		}
+	}
+	return out
+}
+
+// openAIResponseContentParts builds the input content parts for a segment: an
+// input_image part per file, then an input_text part for its content.
+func openAIResponseContentParts(ctx context.Context, segment PromptSegment, options ExecutionOptions) ([]responseItem, error) {
+	parts := make([]responseItem, 0, len(segment.Files)+1)
 	for _, file := range segment.Files {
 		dataURL, err := dataSourceToDataURL(ctx, file)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
-		parts = append(parts, responses.ResponseInputContentUnionParam{
-			OfInputImage: &responses.ResponseInputImageParam{
-				Detail:   responses.ResponseInputImageDetail(openAIImageDetail(options)),
-				ImageURL: param.NewOpt(dataURL),
-			},
-		})
+		parts = append(parts, responseItem{"type": "input_image", "image_url": dataURL, "detail": openAIImageDetail(options)})
 	}
 	if segment.Content != "" {
-		parts = append(parts, responses.ResponseInputContentParamOfInputText(segment.Content))
+		parts = append(parts, responseItem{"type": "input_text", "text": segment.Content})
 	}
-	return parts, segment.Content, nil
+	return parts, nil
 }
 
 // requestResponsesCompletion runs a non-streaming Responses request, routing
@@ -117,11 +127,20 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 	}
 	input := openAIResponsesInput(options.Conversation, rp.Items, len(options.Tools) > 0)
 	payload := d.responsePayload(input, options)
-	response, err := d.sdk.Responses.New(ctx, payload, d.requestOptions(options.HTTPTimeout)...)
-	if err != nil {
+	var raw json.RawMessage
+	if err := d.sdk.Post(ctx, "responses", payload, &raw, d.requestOptions(options.HTTPTimeout)...); err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
 	}
-	completion := extractOpenAIResponseCompletion(response, options.IncludeOriginalResponse)
+	var response responsesResponse
+	if err := json.Unmarshal(raw, &response); err != nil {
+		return nil, err
+	}
+	completion := extractOpenAIResponseCompletion(&response)
+	if options.IncludeOriginalResponse {
+		var original any
+		_ = json.Unmarshal(raw, &original)
+		completion.OriginalResponse = original
+	}
 	completion.Conversation = buildOpenAIResponsesConversation(input, completion, options)
 	return completion, nil
 }
@@ -134,24 +153,43 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 	// Image generation models use the Images API path and do not stream through
 	// Responses; callers should use Execute for those models.
 	input := openAIResponsesInput(options.Conversation, rp.Items, len(options.Tools) > 0)
-	stream := d.sdk.Responses.NewStreaming(ctx, d.responsePayload(input, options), d.requestOptions(options.HTTPTimeout)...)
+	payload := d.responsePayload(input, options)
+	payload["stream"] = true
+	var res *http.Response
+	if err := d.sdk.Post(ctx, "responses", payload, &res, d.requestOptions(options.HTTPTimeout)...); err != nil {
+		return nil, d.formatError(err, options.Model, "stream")
+	}
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: prompt}
 	go func() {
 		defer close(ch)
-		defer func() { _ = stream.Close() }()
 		state := openAIResponsesStreamState{tools: map[string]openAIResponsesStreamTool{}}
-		for stream.Next() {
-			out := state.chunk(stream.Current())
+		err := core.ScanSSE(res.Body, func(event core.SSEEvent) error {
+			if event.Data == "" || event.Data == "[DONE]" {
+				return nil
+			}
+			var decoded responsesStreamEvent
+			if err := json.Unmarshal([]byte(event.Data), &decoded); err != nil {
+				return err
+			}
+			out := state.chunk(decoded)
 			if len(out.Result) > 0 || len(out.ToolUse) > 0 || out.FinishReason != "" || out.TokenUsage != nil {
-				ch <- streamItem{Chunk: out}
+				select {
+				case ch <- streamItem{Chunk: out}:
+				case <-ctx.Done():
+					return ctx.Err()
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			select {
+			case ch <- streamItem{Err: d.formatError(err, options.Model, "stream")}:
+			case <-ctx.Done():
 			}
 		}
-		if err := stream.Err(); err != nil {
-			ch <- streamItem{Err: d.formatError(err, options.Model, "stream")}
-		}
 	}()
-	return newChannelStreamWithFinalizer(ch, completion, stream.Close, func(resp *ExecutionResponse) {
+	return newChannelStreamWithFinalizer(ch, completion, res.Body.Close, func(resp *ExecutionResponse) {
 		resp.Conversation = buildOpenAIResponsesConversation(input, &resp.Completion, options)
 	}), nil
 }
@@ -160,69 +198,138 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 // only sent for non-reasoning models; reasoning effort is mapped per-model;
 // tools are omitted for likely non-tool models; and a ResultSchema becomes a
 // json_schema text format (strict when convertible), skipped for realtime models.
-func (d *OpenAICompatibleDriver) responsePayload(input responses.ResponseInputParam, options ExecutionOptions) responses.ResponseNewParams {
-	payload := responses.ResponseNewParams{
-		Model: shared.ResponsesModel(options.Model),
-		Input: responses.ResponseNewParamsInputUnion{OfInputItemList: input},
+func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options ExecutionOptions) map[string]any {
+	payload := map[string]any{
+		"model": options.Model,
+		"input": input,
 	}
 	if v := optionInt(options.ModelOptions, "max_tokens"); v != nil {
-		payload.MaxOutputTokens = param.NewOpt(int64(*v))
+		payload["max_output_tokens"] = *v
 	}
 	if !isOpenAIReasoningModel(options.Model) {
 		if v := optionFloat(options.ModelOptions, "temperature"); v != nil {
-			payload.Temperature = param.NewOpt(*v)
+			payload["temperature"] = *v
 		}
 		if v := optionFloat(options.ModelOptions, "top_p"); v != nil {
-			payload.TopP = param.NewOpt(*v)
+			payload["top_p"] = *v
 		}
 	}
 	if effort := openAIReasoningEffort(options.Model, optionString(options.ModelOptions, "effort", "reasoning_effort")); effort != "" {
-		payload.Reasoning = shared.ReasoningParam{Effort: shared.ReasoningEffort(effort)}
+		payload["reasoning"] = map[string]any{"effort": effort}
 	}
 	if len(options.Labels) > 0 {
-		payload.Metadata = shared.Metadata(options.Labels)
+		payload["metadata"] = options.Labels
 	}
 	if len(options.Tools) > 0 && !isLikelyNonToolOpenAIModel(options.Model) {
-		payload.Tools = openAIResponseTools(options.Tools)
+		payload["tools"] = openAIResponseTools(options.Tools)
 	}
 	if options.ResultSchema != nil && !strings.Contains(strings.ToLower(options.Model), "realtime") {
 		schema, strict := openAISchemaForResponses(options.ResultSchema)
-		payload.Text = responses.ResponseTextConfigParam{
-			Format: responses.ResponseFormatTextConfigUnionParam{
-				OfJSONSchema: &responses.ResponseFormatTextJSONSchemaConfigParam{
-					Name:   "format_output",
-					Schema: schema,
-					Strict: param.NewOpt(strict),
-				},
-			},
-		}
+		payload["text"] = map[string]any{"format": map[string]any{
+			"type":   "json_schema",
+			"name":   "format_output",
+			"schema": schema,
+			"strict": strict,
+		}}
 	}
 	return payload
 }
 
-// openAIResponseTools converts ToolDefinitions into Responses function tool
-// params, applying strict schema mode when the input schema can be converted.
-func openAIResponseTools(tools []ToolDefinition) []responses.ToolUnionParam {
-	out := make([]responses.ToolUnionParam, 0, len(tools))
+// openAIResponseTools converts ToolDefinitions into Responses function tools,
+// applying strict schema mode when the input schema can be converted.
+func openAIResponseTools(tools []ToolDefinition) []map[string]any {
+	out := make([]map[string]any, 0, len(tools))
 	for _, tool := range tools {
 		schema, strict := openAISchemaForResponses(tool.InputSchema)
-		fn := responses.FunctionToolParam{
-			Name:       tool.Name,
-			Parameters: schema,
-			Strict:     param.NewOpt(strict),
+		fn := map[string]any{
+			"type":       "function",
+			"name":       tool.Name,
+			"parameters": schema,
+			"strict":     strict,
 		}
 		if tool.Description != nil && *tool.Description != "" {
-			fn.Description = param.NewOpt(*tool.Description)
+			fn["description"] = *tool.Description
 		}
-		out = append(out, responses.ToolUnionParam{OfFunction: &fn})
+		out = append(out, fn)
 	}
 	return out
 }
 
+// responsesResponse is the part of a Responses API response the driver reads.
+type responsesResponse struct {
+	ID                string                      `json:"id"`
+	Status            string                      `json:"status"`
+	Error             *responsesError             `json:"error"`
+	IncompleteDetails *responsesIncompleteDetails `json:"incomplete_details"`
+	Output            []responsesOutputItem       `json:"output"`
+	Usage             *responsesUsage             `json:"usage"`
+}
+
+// responsesError is the error of a failed response or of an error stream event.
+type responsesError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+// responsesIncompleteDetails says why a response is incomplete.
+type responsesIncompleteDetails struct {
+	Reason string `json:"reason"`
+}
+
+// responsesOutputItem is one output item, with its raw JSON kept for the conversation.
+type responsesOutputItem struct {
+	Type         string                   `json:"type"`
+	ID           string                   `json:"id"`
+	CallID       string                   `json:"call_id"`
+	Name         string                   `json:"name"`
+	Arguments    string                   `json:"arguments"`
+	Status       string                   `json:"status"`
+	Result       string                   `json:"result"`
+	OutputFormat string                   `json:"output_format"`
+	Content      []responsesOutputContent `json:"content"`
+	Summary      []responsesOutputContent `json:"summary"`
+	Raw          responseItem             `json:"-"`
+}
+
+// UnmarshalJSON decodes the typed fields and keeps the raw item.
+func (item *responsesOutputItem) UnmarshalJSON(data []byte) error {
+	type plain responsesOutputItem
+	var decoded plain
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	var raw responseItem
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*item = responsesOutputItem(decoded)
+	item.Raw = raw
+	return nil
+}
+
+// responsesOutputContent is one content part of an output message or reasoning summary.
+type responsesOutputContent struct {
+	Type    string `json:"type"`
+	Text    string `json:"text"`
+	Refusal string `json:"refusal"`
+}
+
+// responsesUsage is the usage block of a Responses API response.
+type responsesUsage struct {
+	InputTokens        int64                    `json:"input_tokens"`
+	OutputTokens       int64                    `json:"output_tokens"`
+	TotalTokens        int64                    `json:"total_tokens"`
+	InputTokensDetails *responsesInputTokenInfo `json:"input_tokens_details"`
+}
+
+// responsesInputTokenInfo details the input tokens of a response.
+type responsesInputTokenInfo struct {
+	CachedTokens *int64 `json:"cached_tokens"`
+}
+
 // extractOpenAIResponseCompletion maps a Responses output into a Completion,
-// collecting text/image results, tool uses, usage, and a normalized finish
-// reason, and optionally attaching the raw response.
-func extractOpenAIResponseCompletion(response *responses.Response, includeOriginal bool) *Completion {
+// collecting text/image results, tool uses, usage, and a normalized finish reason.
+func extractOpenAIResponseCompletion(response *responsesResponse) *Completion {
 	if response == nil {
 		return &Completion{Result: []CompletionResult{newTextResult("")}}
 	}
@@ -232,20 +339,17 @@ func extractOpenAIResponseCompletion(response *responses.Response, includeOrigin
 		Result:       result,
 		TokenUsage:   openAIResponseUsage(response.Usage),
 		ToolUse:      tools,
-		FinishReason: openAIResponseFinishReason(*response, len(tools) > 0),
+		FinishReason: openAIResponseFinishReason(response, len(tools) > 0),
 	}
 	if len(completion.Result) == 0 && len(completion.ToolUse) == 0 {
 		completion.Result = []CompletionResult{newTextResult("")}
-	}
-	if includeOriginal {
-		completion.OriginalResponse = response
 	}
 	return completion
 }
 
 // openAIResponseResults extracts text and generated-image results from Responses
 // output items, wrapping bare base64 image data in a PNG data URL.
-func openAIResponseResults(output []responses.ResponseOutputItemUnion) []CompletionResult {
+func openAIResponseResults(output []responsesOutputItem) []CompletionResult {
 	results := []CompletionResult{}
 	for _, item := range output {
 		switch item.Type {
@@ -270,7 +374,7 @@ func openAIResponseResults(output []responses.ResponseOutputItemUnion) []Complet
 
 // openAIResponseToolUses extracts function_call items as ToolUses, preferring
 // CallID over ID and parsing the arguments JSON.
-func openAIResponseToolUses(output []responses.ResponseOutputItemUnion) []ToolUse {
+func openAIResponseToolUses(output []responsesOutputItem) []ToolUse {
 	tools := []ToolUse{}
 	for _, item := range output {
 		if item.Type != "function_call" {
@@ -289,17 +393,21 @@ func openAIResponseToolUses(output []responses.ResponseOutputItemUnion) []ToolUs
 }
 
 // openAIResponseUsage normalizes Responses token usage, returning nil when empty.
-func openAIResponseUsage(usage responses.ResponseUsage) *ExecutionTokenUsage {
-	if usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens == 0 {
+func openAIResponseUsage(usage *responsesUsage) *ExecutionTokenUsage {
+	if usage == nil || (usage.InputTokens == 0 && usage.OutputTokens == 0 && usage.TotalTokens == 0) {
 		return nil
 	}
-	return openAIUsage(usage.InputTokens, usage.OutputTokens, usage.TotalTokens, usage.InputTokensDetails.CachedTokens)
+	var cached int64
+	if usage.InputTokensDetails != nil && usage.InputTokensDetails.CachedTokens != nil {
+		cached = *usage.InputTokensDetails.CachedTokens
+	}
+	return openAIUsage(usage.InputTokens, usage.OutputTokens, usage.TotalTokens, cached)
 }
 
 // openAIResponseFinishReason maps the Responses status into a canonical finish
 // reason: "tool_use" when tool calls are present, "stop" on completion, and
 // "length"/the incomplete reason otherwise.
-func openAIResponseFinishReason(response responses.Response, toolUse bool) string {
+func openAIResponseFinishReason(response *responsesResponse, toolUse bool) string {
 	if toolUse {
 		return "tool_use"
 	}
@@ -307,19 +415,36 @@ func openAIResponseFinishReason(response responses.Response, toolUse bool) strin
 	case "completed":
 		return "stop"
 	case "incomplete":
-		if response.IncompleteDetails.Reason == "max_output_tokens" {
+		reason := ""
+		if response.IncompleteDetails != nil {
+			reason = response.IncompleteDetails.Reason
+		}
+		if reason == "max_output_tokens" {
 			return "length"
 		}
-		if response.IncompleteDetails.Reason != "" {
-			return response.IncompleteDetails.Reason
+		if reason != "" {
+			return reason
 		}
 		return "incomplete"
 	default:
-		if response.Status != "" {
-			return string(response.Status)
-		}
-		return ""
+		return response.Status
 	}
+}
+
+// responsesStreamEvent is one Responses API stream event, with the fields of
+// every event type the driver reads.
+type responsesStreamEvent struct {
+	Type        string               `json:"type"`
+	OutputIndex int                  `json:"output_index"`
+	ItemID      string               `json:"item_id"`
+	Delta       string               `json:"delta"`
+	Text        string               `json:"text"`
+	Arguments   string               `json:"arguments"`
+	Refusal     string               `json:"refusal"`
+	Code        string               `json:"code"`
+	Message     string               `json:"message"`
+	Item        *responsesOutputItem `json:"item"`
+	Response    *responsesResponse   `json:"response"`
 }
 
 // openAIResponsesStreamTool tracks the id and name of an in-flight streaming
@@ -338,286 +463,91 @@ type openAIResponsesStreamState struct {
 // chunk advances the streaming state machine for one Responses event, emitting a
 // CompletionChunk for tool-call starts, argument deltas, text deltas, and the
 // terminal completed/incomplete/failed events (which carry finish reason and usage).
-func (s *openAIResponsesStreamState) chunk(event responses.ResponseStreamEventUnion) CompletionChunk {
-	switch value := event.AsAny().(type) {
-	case responses.ResponseOutputItemAddedEvent:
-		if value.Item.Type == "function_call" {
-			id := value.Item.CallID
+func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) CompletionChunk {
+	switch event.Type {
+	case "response.output_item.added":
+		if event.Item != nil && event.Item.Type == "function_call" {
+			id := event.Item.CallID
 			if id == "" {
-				id = value.Item.ID
+				id = event.Item.ID
 			}
 			if id == "" {
-				id = fmt.Sprintf("tool_%d", value.OutputIndex)
+				id = fmt.Sprintf("tool_%d", event.OutputIndex)
 			}
-			meta := openAIResponsesStreamTool{id: id, name: value.Item.Name}
-			if value.Item.ID != "" {
-				s.tools[value.Item.ID] = meta
+			meta := openAIResponsesStreamTool{id: id, name: event.Item.Name}
+			if event.Item.ID != "" {
+				s.tools[event.Item.ID] = meta
 			}
-			if value.Item.CallID != "" {
-				s.tools[value.Item.CallID] = meta
+			if event.Item.CallID != "" {
+				s.tools[event.Item.CallID] = meta
 			}
-			return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: value.Item.Name, ToolInput: ""}}}
+			return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: event.Item.Name, ToolInput: ""}}}
 		}
-	case responses.ResponseFunctionCallArgumentsDeltaEvent:
-		meta := s.tools[value.ItemID]
+	case "response.function_call_arguments.delta":
+		meta := s.tools[event.ItemID]
 		id := meta.id
 		if id == "" {
-			id = value.ItemID
+			id = event.ItemID
 		}
 		if id == "" {
-			id = fmt.Sprintf("tool_%d", value.OutputIndex)
+			id = fmt.Sprintf("tool_%d", event.OutputIndex)
 		}
-		return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: meta.name, ToolInput: value.Delta}}}
-	case responses.ResponseTextDeltaEvent:
-		if value.Delta != "" {
-			return CompletionChunk{Result: []CompletionResult{newTextResult(value.Delta)}}
+		return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: meta.name, ToolInput: event.Delta}}}
+	case "response.output_text.delta":
+		if event.Delta != "" {
+			return CompletionChunk{Result: []CompletionResult{newTextResult(event.Delta)}}
 		}
-	case responses.ResponseCompletedEvent:
-		tools := openAIResponseToolUses(value.Response.Output)
-		return CompletionChunk{FinishReason: openAIResponseFinishReason(value.Response, len(tools) > 0), TokenUsage: openAIResponseUsage(value.Response.Usage)}
-	case responses.ResponseIncompleteEvent:
-		tools := openAIResponseToolUses(value.Response.Output)
-		return CompletionChunk{FinishReason: openAIResponseFinishReason(value.Response, len(tools) > 0), TokenUsage: openAIResponseUsage(value.Response.Usage)}
-	case responses.ResponseFailedEvent:
-		return CompletionChunk{FinishReason: openAIResponseFinishReason(value.Response, false), TokenUsage: openAIResponseUsage(value.Response.Usage)}
+	case "response.completed", "response.incomplete", "response.failed":
+		if event.Response == nil {
+			return CompletionChunk{}
+		}
+		tools := openAIResponseToolUses(event.Response.Output)
+		return CompletionChunk{FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0), TokenUsage: openAIResponseUsage(event.Response.Usage)}
 	}
 	return CompletionChunk{}
 }
 
-// openAIResponsesInput combines retained conversation items (in any of the
-// accepted forms) with the new prompt items, repairs orphaned tool calls, and
-// converts tool items to text when the current request has no tools.
-func openAIResponsesInput(conversation any, prompt responses.ResponseInputParam, hasTools bool) responses.ResponseInputParam {
-	// Accept both raw SDK input slices and the structured state returned by this
-	// driver so callers can persist conversation values without conversion.
-	out := responses.ResponseInputParam{}
-	switch value := conversation.(type) {
-	case responses.ResponseInputParam:
-		out = append(out, value...)
-	case []responses.ResponseInputItemUnionParam:
-		out = append(out, value...)
-	case openAIResponsesConversationState:
-		out = append(out, value.Items...)
-	case *openAIResponsesConversationState:
-		if value != nil {
-			out = append(out, value.Items...)
-		}
-	case map[string]any:
-		if items, ok := openAIResponsesStoredItemsFromState(value); ok {
-			out = append(out, items...)
-		}
-	case []any:
-		if items, ok := openAIResponsesStoredInput(value); ok {
-			out = append(out, items...)
-		}
+// openAIResponsesSystemRole picks the role used for system/safety instructions:
+// "user" for o1-mini/o1-preview, "developer" for other o1/o3 reasoning models,
+// and "system" otherwise.
+func openAIResponsesSystemRole(model string) string {
+	normalized := strings.ToLower(shortResourceName(model))
+	if strings.HasPrefix(normalized, "o1-mini") || strings.HasPrefix(normalized, "o1-preview") {
+		return "user"
 	}
-	out = append(out, prompt...)
-	out = fixOpenAIOrphanedToolUse(out)
-	if !hasTools && openAIResponsesInputHasToolItems(out) {
-		// Stored conversations may include tool call/output items from checkpoint
-		// summaries. If this request has no tools, convert them to text to avoid
-		// Responses API validation errors.
-		out = convertOpenAIResponsesToolItemsToText(out)
+	if strings.HasPrefix(normalized, "o1") || strings.HasPrefix(normalized, "o3") {
+		return "developer"
 	}
-	return out
+	return "system"
 }
 
-// openAIResponsesConversationState is the driver's retained conversation: the
-// accumulated Responses input items plus the turn counter used by retention rules.
-type openAIResponsesConversationState struct {
-	Items responses.ResponseInputParam
-	Turn  int
+// isOpenAIReasoningModel detects reasoning models (o1/o3/o4/gpt-5) by name,
+// which disables temperature/top_p and enables reasoning effort.
+func isOpenAIReasoningModel(model string) bool {
+	normalized := strings.ToLower(model)
+	return strings.Contains(normalized, "o1") || strings.Contains(normalized, "o3") || strings.Contains(normalized, "o4") || strings.Contains(normalized, "gpt-5")
 }
 
-// buildOpenAIResponsesConversation appends the completion's assistant text and
-// tool calls to the request input, increments the turn, and applies media and
-// heartbeat stripping retention rules to produce the next conversation state.
-func buildOpenAIResponsesConversation(input responses.ResponseInputParam, completion *Completion, options ExecutionOptions) openAIResponsesConversationState {
-	// Responses conversations are retained as input items, not provider response
-	// objects. Streaming and non-streaming paths both append assistant text/tool
-	// calls here before applying retention rules.
-	out := make(responses.ResponseInputParam, 0, len(input)+1+len(completion.ToolUse))
-	out = append(out, input...)
-	text := completionResultsToText(completion.Result)
-	if text != "" {
-		out = append(out, responses.ResponseInputItemParamOfMessage(text, responses.EasyInputMessageRoleAssistant))
-	}
-	for _, tool := range completion.ToolUse {
-		data, _ := json.Marshal(tool.ToolInput)
-		args := string(data)
-		out = append(out, responses.ResponseInputItemParamOfFunctionCall(args, tool.ID, tool.ToolName))
-	}
-	turn := openAIResponsesTurn(options.Conversation) + 1
-	stripMedia := shouldStripConversationMedia(turn, options.StripImagesAfterTurns)
-	stripHeartbeats := shouldStripConversationHeartbeats(turn, options.StripHeartbeatsAfterTurns)
-	return openAIResponsesConversationState{
-		Items: processOpenAIResponsesItemsForConversation(out, options, stripMedia, stripHeartbeats),
-		Turn:  turn,
-	}
-}
-
-// openAIResponsesTurn reads the turn counter from a retained conversation value,
-// returning 0 for unknown or absent state.
-func openAIResponsesTurn(conversation any) int {
-	switch value := conversation.(type) {
-	case openAIResponsesConversationState:
-		return value.Turn
-	case *openAIResponsesConversationState:
-		if value != nil {
-			return value.Turn
-		}
-	case map[string]any:
-		if turn, ok := openAIResponsesStoredInt(value, "Turn", "turn"); ok {
-			return turn
-		}
-	}
-	return 0
-}
-
-// openAIResponsesStoredItemsFromState falls back to structural decoding for
-// JSON-parsed SDK union items, whose concrete Go union type is otherwise lost.
-func openAIResponsesStoredItemsFromState(value map[string]any) (responses.ResponseInputParam, bool) {
-	var decoded openAIResponsesConversationState
-	if decodeStoredConversation(value, &decoded) {
-		return decoded.Items, true
-	}
-	if raw, ok := openAIResponsesStoredMapLookup(value, "Items", "items"); ok {
-		return openAIResponsesStoredInput(raw)
-	}
-	return nil, false
-}
-
-func openAIResponsesStoredInput(raw any) (responses.ResponseInputParam, bool) {
-	var decoded responses.ResponseInputParam
-	if decodeStoredConversation(raw, &decoded) {
-		return decoded, true
-	}
-	items, ok := raw.([]any)
-	if !ok {
-		return nil, false
-	}
-	out := make(responses.ResponseInputParam, 0, len(items))
-	for _, item := range items {
-		if decoded, ok := openAIResponsesStoredItem(item); ok {
-			out = append(out, decoded)
-		}
-	}
-	return out, true
-}
-
-func openAIResponsesStoredItem(raw any) (responses.ResponseInputItemUnionParam, bool) {
-	value, ok := raw.(map[string]any)
-	if !ok {
-		return responses.ResponseInputItemUnionParam{}, false
-	}
-	itemType := openAIResponsesStoredString(value, "type")
-	switch itemType {
-	case "function_call":
-		return responses.ResponseInputItemParamOfFunctionCall(
-			openAIResponsesStoredString(value, "arguments"),
-			openAIResponsesStoredString(value, "call_id", "callID", "CallID"),
-			openAIResponsesStoredString(value, "name"),
-		), true
-	case "function_call_output":
-		return responses.ResponseInputItemParamOfFunctionCallOutput(
-			openAIResponsesStoredString(value, "call_id", "callID", "CallID"),
-			openAIResponsesStoredString(value, "output"),
-		), true
-	}
-	if _, ok := openAIResponsesStoredMapLookup(value, "role", "Role"); ok {
-		role := responses.EasyInputMessageRole(openAIResponsesStoredString(value, "role", "Role"))
-		rawContent, _ := openAIResponsesStoredMapLookup(value, "content", "Content")
-		if text, ok := rawContent.(string); ok {
-			return responses.ResponseInputItemParamOfMessage(text, role), true
-		}
-		if parts, ok := openAIResponsesStoredContentParts(rawContent); ok {
-			return responses.ResponseInputItemParamOfMessage(parts, role), true
-		}
-	}
-	return responses.ResponseInputItemUnionParam{}, false
-}
-
-func openAIResponsesStoredContentParts(raw any) (responses.ResponseInputMessageContentListParam, bool) {
-	items, ok := raw.([]any)
-	if !ok {
-		return nil, false
-	}
-	out := make(responses.ResponseInputMessageContentListParam, 0, len(items))
-	for _, item := range items {
-		value, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		if text := openAIResponsesStoredString(value, "text", "Text"); text != "" {
-			out = append(out, responses.ResponseInputContentParamOfInputText(text))
-			continue
-		}
-		imageURL := openAIResponsesStoredString(value, "image_url", "imageURL", "ImageURL")
-		if imageURL == "" {
-			continue
-		}
-		detail := responses.ResponseInputImageDetail(openAIResponsesStoredString(value, "detail", "Detail"))
-		if detail == "" {
-			detail = responses.ResponseInputImageDetailAuto
-		}
-		part := responses.ResponseInputContentParamOfInputImage(detail)
-		part.OfInputImage.ImageURL = param.NewOpt(imageURL)
-		out = append(out, part)
-	}
-	return out, true
-}
-
-func decodeStoredConversation[T any](conversation any, target *T) bool {
-	data, err := json.Marshal(conversation)
-	if err != nil {
-		return false
-	}
-	return json.Unmarshal(data, target) == nil
-}
-
-func openAIResponsesStoredMapLookup(value map[string]any, keys ...string) (any, bool) {
-	for _, key := range keys {
-		if raw, ok := value[key]; ok {
-			return raw, true
-		}
-	}
-	return nil, false
-}
-
-func openAIResponsesStoredString(value map[string]any, keys ...string) string {
-	raw, ok := openAIResponsesStoredMapLookup(value, keys...)
-	if !ok {
+// openAIReasoningEffort validates the requested effort for reasoning models,
+// forcing "high" for gpt-5-pro and returning "" when effort does not apply.
+func openAIReasoningEffort(model string, effort string) string {
+	if effort == "" || !isOpenAIReasoningModel(model) {
 		return ""
 	}
-	text, _ := raw.(string)
-	return text
-}
-
-func openAIResponsesStoredInt(value map[string]any, keys ...string) (int, bool) {
-	raw, ok := openAIResponsesStoredMapLookup(value, keys...)
-	if !ok {
-		return 0, false
+	if strings.HasPrefix(strings.ToLower(shortResourceName(model)), "gpt-5-pro") {
+		return "high"
 	}
-	switch number := raw.(type) {
-	case int:
-		return number, true
-	case int64:
-		return int(number), true
-	case float64:
-		return int(number), true
-	case json.Number:
-		n, err := number.Int64()
-		if err != nil {
-			return 0, false
-		}
-		return int(n), true
+	switch effort {
+	case "low", "medium", "high":
+		return effort
 	default:
-		return 0, false
+		return ""
 	}
 }
 
+// openAIImageDetail returns the image_detail option; OpenAI accepts only low,
+// high, or auto, so other values fall back to auto.
 func openAIImageDetail(options ExecutionOptions) string {
-	// OpenAI accepts only low, high, or auto; keep invalid user values harmless.
 	switch detail := optionString(options.ModelOptions, "image_detail"); detail {
 	case "low", "high", "auto":
 		return detail
@@ -650,241 +580,10 @@ func completionResultsToText(results []CompletionResult) string {
 	return b.String()
 }
 
-// fixOpenAIOrphanedToolUse inserts synthetic function_call_output items for any
-// function_call lacking a matching output, keeping the conversation valid.
-func fixOpenAIOrphanedToolUse(items responses.ResponseInputParam) responses.ResponseInputParam {
-	// If an agent was stopped after a function_call but before its output was
-	// recorded, the next Responses request would contain an orphaned tool call.
-	// Insert a synthetic interruption output so the conversation remains valid.
-	if len(items) < 2 {
-		return items
-	}
-	outputs := map[string]bool{}
-	for _, item := range items {
-		if out := item.GetCallID(); out != nil && openAIResponsesItemType(item) == "function_call_output" {
-			outputs[*out] = true
-		}
-	}
-	out := make(responses.ResponseInputParam, 0, len(items))
-	pending := map[string]string{}
-	flushPending := func() {
-		for id, name := range pending {
-			out = append(out, responses.ResponseInputItemParamOfFunctionCallOutput(id, fmt.Sprintf(`[Tool interrupted: The user stopped the operation before "%s" could execute.]`, name)))
-			delete(pending, id)
-		}
-	}
-	for _, item := range items {
-		itemType := openAIResponsesItemType(item)
-		if itemType == "function_call" {
-			callID := ""
-			if id := item.GetCallID(); id != nil {
-				callID = *id
-			}
-			if callID != "" && !outputs[callID] {
-				name := "unknown"
-				if item.GetName() != nil {
-					name = *item.GetName()
-				}
-				pending[callID] = name
-			}
-			out = append(out, item)
-			continue
-		}
-		if itemType == "function_call_output" {
-			out = append(out, item)
-			continue
-		}
-		flushPending()
-		out = append(out, item)
-	}
-	flushPending()
-	return out
-}
-
-// openAIResponsesInputHasToolItems reports whether any input item is a tool call
-// or tool output.
-func openAIResponsesInputHasToolItems(items responses.ResponseInputParam) bool {
-	for _, item := range items {
-		itemType := openAIResponsesItemType(item)
-		if itemType == "function_call" || itemType == "function_call_output" {
-			return true
-		}
-	}
-	return false
-}
-
-// convertOpenAIResponsesToolItemsToText rewrites tool call/output items as
-// bracketed transcript messages (truncated) for requests made without tools.
-func convertOpenAIResponsesToolItemsToText(items responses.ResponseInputParam) responses.ResponseInputParam {
-	// When tools are unavailable, preserve prior tool context as readable
-	// transcript text instead of dropping it from conversation history.
-	out := make(responses.ResponseInputParam, 0, len(items))
-	for _, item := range items {
-		itemType := openAIResponsesItemType(item)
-		switch itemType {
-		case "function_call":
-			name := "unknown"
-			if item.GetName() != nil {
-				name = *item.GetName()
-			}
-			args := ""
-			if item.GetArguments() != nil {
-				args = *item.GetArguments()
-			}
-			out = append(out, responses.ResponseInputItemParamOfMessage(
-				fmt.Sprintf("[Tool call: %s(%s)]", name, truncateForConversation(args, 500)),
-				responses.EasyInputMessageRoleAssistant,
-			))
-		case "function_call_output":
-			output := ""
-			if item.OfFunctionCallOutput != nil {
-				output = item.OfFunctionCallOutput.Output
-			}
-			out = append(out, responses.ResponseInputItemParamOfMessage(
-				"[Tool result: "+truncateForConversation(output, 500)+"]",
-				responses.EasyInputMessageRoleUser,
-			))
-		default:
-			out = append(out, item)
-		}
-	}
-	return out
-}
-
-// openAIResponsesItemType returns a coarse type tag ("function_call",
-// "function_call_output", "message") for a Responses input item union.
-func openAIResponsesItemType(item responses.ResponseInputItemUnionParam) string {
-	switch {
-	case item.OfFunctionCall != nil:
-		return "function_call"
-	case item.OfFunctionCallOutput != nil:
-		return "function_call_output"
-	case item.OfMessage != nil:
-		return "message"
-	case item.OfInputMessage != nil:
-		return "message"
-	case item.OfOutputMessage != nil:
-		return "message"
-	}
-	if t := item.GetType(); t != nil {
-		return *t
-	}
-	return ""
-}
-
-// openAIResponsesSystemRole picks the role used for system/safety instructions:
-// "user" for o1-mini/o1-preview, "developer" for other o1/o3 reasoning models,
-// and "system" otherwise.
-func openAIResponsesSystemRole(model string) responses.EasyInputMessageRole {
-	normalized := strings.ToLower(shortResourceName(model))
-	if strings.HasPrefix(normalized, "o1-mini") || strings.HasPrefix(normalized, "o1-preview") {
-		return responses.EasyInputMessageRoleUser
-	}
-	if strings.HasPrefix(normalized, "o1") || strings.HasPrefix(normalized, "o3") {
-		return responses.EasyInputMessageRoleDeveloper
-	}
-	return responses.EasyInputMessageRoleSystem
-}
-
-// isOpenAIReasoningModel detects reasoning models (o1/o3/o4/gpt-5) by name,
-// which disables temperature/top_p and enables reasoning effort.
-func isOpenAIReasoningModel(model string) bool {
-	normalized := strings.ToLower(model)
-	return strings.Contains(normalized, "o1") || strings.Contains(normalized, "o3") || strings.Contains(normalized, "o4") || strings.Contains(normalized, "gpt-5")
-}
-
-// openAIReasoningEffort validates the requested effort for reasoning models,
-// forcing "high" for gpt-5-pro and returning "" when effort does not apply.
-func openAIReasoningEffort(model string, effort string) string {
-	if effort == "" || !isOpenAIReasoningModel(model) {
-		return ""
-	}
-	if strings.HasPrefix(strings.ToLower(shortResourceName(model)), "gpt-5-pro") {
-		return "high"
-	}
-	switch effort {
-	case "low", "medium", "high":
-		return effort
-	default:
-		return ""
-	}
-}
-
-// isOpenAIImageModel detects image-generation models (dall-e/gpt-image/
-// chatgpt-image), which route to the Images API instead of Responses.
-func isOpenAIImageModel(model string) bool {
-	model = strings.ToLower(model)
-	return strings.Contains(model, "dall-e") || strings.Contains(model, "gpt-image") || strings.Contains(model, "chatgpt-image")
-}
-
-// requestOpenAIImageGeneration calls the Images API using the flattened prompt
-// text and image ModelOptions (size, n, quality, style, background, format,
-// etc.), defaulting base64 output for dall-e, and returns image results as data
-// URLs or URLs.
-func (d *OpenAICompatibleDriver) requestOpenAIImageGeneration(ctx context.Context, prompt openAIResponsesPrompt, options ExecutionOptions) (*Completion, error) {
-	payload := openai.ImageGenerateParams{
-		Model:  openai.ImageModel(options.Model),
-		Prompt: strings.TrimSpace(prompt.Text),
-		Size:   openai.ImageGenerateParamsSize1024x1024,
-	}
-	if size := optionString(options.ModelOptions, "size"); size != "" {
-		payload.Size = openai.ImageGenerateParamsSize(size)
-	}
-	if n := optionInt(options.ModelOptions, "n"); n != nil {
-		payload.N = param.NewOpt(int64(*n))
-	}
-	if responseFormat := optionString(options.ModelOptions, "response_format"); responseFormat != "" {
-		payload.ResponseFormat = openai.ImageGenerateParamsResponseFormat(responseFormat)
-	} else if strings.Contains(options.Model, "dall-e") {
-		payload.ResponseFormat = openai.ImageGenerateParamsResponseFormatB64JSON
-	}
-	if quality := optionString(options.ModelOptions, "image_quality", "quality"); quality != "" {
-		payload.Quality = openai.ImageGenerateParamsQuality(quality)
-	} else if strings.Contains(options.Model, "dall-e-3") {
-		payload.Quality = openai.ImageGenerateParamsQualityStandard
-	}
-	if style := optionString(options.ModelOptions, "style"); style != "" {
-		payload.Style = openai.ImageGenerateParamsStyle(style)
-	}
-	if background := optionString(options.ModelOptions, "background"); background != "" {
-		payload.Background = openai.ImageGenerateParamsBackground(background)
-	}
-	if outputFormat := optionString(options.ModelOptions, "output_format"); outputFormat != "" {
-		payload.OutputFormat = openai.ImageGenerateParamsOutputFormat(outputFormat)
-	}
-	if outputCompression := optionInt(options.ModelOptions, "output_compression"); outputCompression != nil {
-		payload.OutputCompression = param.NewOpt(int64(*outputCompression))
-	}
-	if moderation := optionString(options.ModelOptions, "moderation"); moderation != "" {
-		payload.Moderation = openai.ImageGenerateParamsModeration(moderation)
-	}
-	response, err := d.sdk.Images.Generate(ctx, payload, d.requestOptions(options.HTTPTimeout)...)
-	if err != nil {
-		return nil, d.formatError(err, options.Model, "execute")
-	}
-	results := []CompletionResult{}
-	for _, image := range response.Data {
-		if image.B64JSON != "" {
-			results = append(results, newImageResult("data:image/png;base64,"+image.B64JSON))
-		} else if image.URL != "" {
-			results = append(results, newImageResult(image.URL))
-		}
-	}
-	return &Completion{Result: results}, nil
-}
-
-// optionString returns the first option value found under the given keys as a
-// string, or "" when none is set.
-func optionString(options map[string]any, keys ...string) string {
-	if options == nil {
-		return ""
-	}
-	for _, key := range keys {
-		if value, ok := options[key].(string); ok {
-			return value
-		}
-	}
-	return ""
+// stringValue returns v when it is a string, and "" otherwise.
+func stringValue(v any) string {
+	s, _ := v.(string)
+	return s
 }
 
 // openAISchemaForResponses prepares a JSON schema for the Responses API,

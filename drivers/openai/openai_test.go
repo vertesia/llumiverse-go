@@ -6,8 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/openai/openai-go/responses"
 )
 
 func TestOpenAICompatibleExecuteUsesResponsesAPI(t *testing.T) {
@@ -290,9 +288,9 @@ func TestOpenAIResponsesConversationToolItemsBecomeTextWithoutTools(t *testing.T
 	}
 	_, err = driver.Execute(context.Background(), []PromptSegment{{Role: PromptRoleUser, Content: "summarize"}}, ExecutionOptions{
 		Model: "gpt-4.1",
-		Conversation: responses.ResponseInputParam{
-			responses.ResponseInputItemParamOfFunctionCall(`{"q":"tokyo"}`, "call_1", "lookup"),
-			responses.ResponseInputItemParamOfFunctionCallOutput("call_1", `{"ok":true}`),
+		Conversation: []any{
+			map[string]any{"type": "function_call", "arguments": `{"q":"tokyo"}`, "call_id": "call_1", "name": "lookup"},
+			map[string]any{"type": "function_call_output", "call_id": "call_1", "output": `{"ok":true}`},
 		},
 	})
 	if err != nil {
@@ -358,27 +356,23 @@ func TestOpenAIImageGeneration(t *testing.T) {
 	}
 }
 
-func openAIResponseInputTexts(items responses.ResponseInputParam) []string {
+func openAIResponseInputTexts(items []responseItem) []string {
 	var out []string
 	for _, item := range items {
-		switch {
-		case item.OfMessage != nil:
-			if item.OfMessage.Content.OfString.Valid() {
-				out = append(out, item.OfMessage.Content.OfString.Value)
-			}
-			for _, part := range item.OfMessage.Content.OfInputItemContentList {
-				if part.OfInputText != nil {
-					out = append(out, part.OfInputText.Text)
+		switch itemType(item) {
+		case "message":
+			switch content := item["content"].(type) {
+			case string:
+				out = append(out, content)
+			case []any:
+				for _, raw := range content {
+					if part, ok := raw.(map[string]any); ok && (part["type"] == "input_text" || part["type"] == "output_text") {
+						out = append(out, stringValue(part["text"]))
+					}
 				}
 			}
-		case item.OfInputMessage != nil:
-			for _, part := range item.OfInputMessage.Content {
-				if part.OfInputText != nil {
-					out = append(out, part.OfInputText.Text)
-				}
-			}
-		case item.OfFunctionCallOutput != nil:
-			out = append(out, item.OfFunctionCallOutput.Output)
+		case "function_call_output":
+			out = append(out, functionCallOutputText(item["output"]))
 		}
 	}
 	return out

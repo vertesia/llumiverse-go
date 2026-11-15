@@ -12,8 +12,6 @@ import (
 	"time"
 
 	oa "github.com/openai/openai-go"
-	"github.com/openai/openai-go/packages/param"
-	"github.com/openai/openai-go/responses"
 	"github.com/vertesia/llumiverse-go/common"
 )
 
@@ -249,20 +247,22 @@ func TestOpenAIHelperBranches(t *testing.T) {
 func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 	t.Parallel()
 
-	if got := openAIResponsesTurn(openAIResponsesConversationState{Turn: 2}); got != 2 {
+	turnOf := func(conversation any) int {
+		_, turn, _ := openAIResponsesConversation(conversation)
+		return turn
+	}
+	if got := turnOf(openAIResponsesConversationState{Turn: 2}); got != 2 {
 		t.Fatalf("turn value = %d", got)
 	}
-	if got := openAIResponsesTurn(&openAIResponsesConversationState{Turn: 3}); got != 3 {
+	if got := turnOf(&openAIResponsesConversationState{Turn: 3}); got != 3 {
 		t.Fatalf("turn pointer = %d", got)
 	}
-	if got := openAIResponsesTurn((*openAIResponsesConversationState)(nil)); got != 0 {
+	if got := turnOf((*openAIResponsesConversationState)(nil)); got != 0 {
 		t.Fatalf("nil turn = %d", got)
 	}
 	stored := openAIResponsesConversationState{
-		Items: responses.ResponseInputParam{
-			responses.ResponseInputItemParamOfMessage("old question", responses.EasyInputMessageRoleUser),
-		},
-		Turn: 6,
+		Items: []responseItem{{"role": "user", "content": "old question"}},
+		Turn:  6,
 	}
 	data, err := json.Marshal(stored)
 	if err != nil {
@@ -272,12 +272,10 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 	if err := json.Unmarshal(data, &restored); err != nil {
 		t.Fatal(err)
 	}
-	if got := openAIResponsesTurn(restored); got != 6 {
+	if got := turnOf(restored); got != 6 {
 		t.Fatalf("json-restored turn = %d", got)
 	}
-	restoredInput := openAIResponsesInput(restored, responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage("new question", responses.EasyInputMessageRoleUser),
-	}, true)
+	restoredInput := openAIResponsesInput(restored, []responseItem{{"role": "user", "content": "new question"}}, true)
 	restoredTexts := openAIResponseInputTexts(restoredInput)
 	if !containsText(restoredTexts, "old question") || !containsText(restoredTexts, "new question") {
 		t.Fatalf("json-restored input texts = %#v", restoredTexts)
@@ -291,12 +289,8 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 		t.Fatalf("completion text = %q", got)
 	}
 
-	prior := responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfFunctionCall(`{"q":"tokyo"}`, "call_1", "lookup"),
-	}
-	combined := openAIResponsesInput(&openAIResponsesConversationState{Items: prior}, responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage("next", responses.EasyInputMessageRoleUser),
-	}, false)
+	prior := []responseItem{{"type": "function_call", "arguments": `{"q":"tokyo"}`, "call_id": "call_1", "name": "lookup"}}
+	combined := openAIResponsesInput(&openAIResponsesConversationState{Items: prior}, []responseItem{{"role": "user", "content": "next"}}, false)
 	if openAIResponsesInputHasToolItems(combined) {
 		t.Fatalf("tool items were not converted: %#v", combined)
 	}
@@ -305,9 +299,7 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 		t.Fatalf("combined texts = %#v", texts)
 	}
 
-	state := buildOpenAIResponsesConversation(responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfMessage("question", responses.EasyInputMessageRoleUser),
-	}, &Completion{
+	state := buildOpenAIResponsesConversation([]responseItem{{"role": "user", "content": "question"}}, &Completion{
 		Result: []CompletionResult{common.NewJSONResult(map[string]any{"answer": "ok"})},
 		ToolUse: []ToolUse{{
 			ID:        "call_2",
@@ -318,26 +310,24 @@ func TestOpenAIResponsesConversationHelperBranches(t *testing.T) {
 	if state.Turn != 5 || !openAIResponsesInputHasToolItems(state.Items) {
 		t.Fatalf("conversation state = %#v", state)
 	}
-	if got := openAIResponsesItemType(responses.ResponseInputItemParamOfOutputMessage(nil, "msg_1", responses.ResponseOutputMessageStatusCompleted)); got != "message" {
-		t.Fatalf("output message item type = %q", got)
+	if got := itemType(responseItem{"role": "assistant", "content": "x"}); got != "message" {
+		t.Fatalf("role item type = %q", got)
 	}
 
-	imagePart := responses.ResponseInputContentParamOfInputImage(responses.ResponseInputImageDetailHigh)
-	imagePart.OfInputImage.ImageURL = param.NewOpt("data:image/png;base64,aW1n")
-	processed := processOpenAIResponsesItemsForConversation(responses.ResponseInputParam{
-		responses.ResponseInputItemParamOfInputMessage(responses.ResponseInputMessageContentListParam{
-			imagePart,
-			responses.ResponseInputContentParamOfInputText("abcdefghijklmnop"),
-		}, "user"),
-		responses.ResponseInputItemParamOfFunctionCall("<heartbeat>working</heartbeat>", "call_3", "work"),
-		responses.ResponseInputItemParamOfFunctionCallOutput("call_3", "abcdefghijklmnop"),
+	processed := processOpenAIResponsesItemsForConversation([]responseItem{
+		{"type": "message", "role": "user", "content": []any{
+			map[string]any{"type": "input_image", "detail": "high", "image_url": "data:image/png;base64,aW1n"},
+			map[string]any{"type": "input_text", "text": "abcdefghijklmnop"},
+		}},
+		{"type": "function_call", "arguments": "<heartbeat>working</heartbeat>", "call_id": "call_3", "name": "work"},
+		{"type": "function_call_output", "call_id": "call_3", "output": "abcdefghijklmnop"},
 	}, ExecutionOptions{StripTextMaxTokens: 2}, true, true)
 	texts = openAIResponseInputTexts(processed)
 	if !containsText(texts, conversationImagePlaceholder) || !containsText(texts, "abcdefgh"+conversationTextTruncatedMarker) {
 		t.Fatalf("processed texts = %#v", texts)
 	}
-	if processed[1].OfFunctionCall.Arguments != conversationHeartbeatPlaceholder {
-		t.Fatalf("processed function call = %#v", processed[1].OfFunctionCall)
+	if processed[1]["arguments"] != conversationHeartbeatPlaceholder {
+		t.Fatalf("processed function call = %#v", processed[1])
 	}
 }
 
@@ -379,23 +369,23 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 		t.Fatalf("nested limited schema = %#v", nested)
 	}
 
-	if got := openAIResponseFinishReason(responses.Response{Status: "completed"}, false); got != "stop" {
+	if got := openAIResponseFinishReason(&responsesResponse{Status: "completed"}, false); got != "stop" {
 		t.Fatalf("completed finish = %q", got)
 	}
-	if got := openAIResponseFinishReason(responses.Response{Status: "incomplete", IncompleteDetails: responses.ResponseIncompleteDetails{Reason: "max_output_tokens"}}, false); got != "length" {
+	if got := openAIResponseFinishReason(&responsesResponse{Status: "incomplete", IncompleteDetails: &responsesIncompleteDetails{Reason: "max_output_tokens"}}, false); got != "length" {
 		t.Fatalf("incomplete finish = %q", got)
 	}
-	if got := openAIResponseFinishReason(responses.Response{Status: "incomplete", IncompleteDetails: responses.ResponseIncompleteDetails{Reason: "content_filter"}}, false); got != "content_filter" {
+	if got := openAIResponseFinishReason(&responsesResponse{Status: "incomplete", IncompleteDetails: &responsesIncompleteDetails{Reason: "content_filter"}}, false); got != "content_filter" {
 		t.Fatalf("content filter finish = %q", got)
 	}
-	if got := openAIResponseFinishReason(responses.Response{Status: "failed"}, false); got != "failed" {
+	if got := openAIResponseFinishReason(&responsesResponse{Status: "failed"}, false); got != "failed" {
 		t.Fatalf("failed finish = %q", got)
 	}
-	if got := openAIResponseFinishReason(responses.Response{}, true); got != "tool_use" {
+	if got := openAIResponseFinishReason(&responsesResponse{}, true); got != "tool_use" {
 		t.Fatalf("tool finish = %q", got)
 	}
 
-	var response responses.Response
+	var response responsesResponse
 	if err := json.Unmarshal([]byte(`{
 		"id":"resp_1",
 		"object":"response",
@@ -411,24 +401,24 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 	}`), &response); err != nil {
 		t.Fatal(err)
 	}
-	completion := extractOpenAIResponseCompletion(&response, true)
-	if completion.OriginalResponse == nil || len(completion.Result) != 2 || completion.Result[1].Type() != ResultTypeImage || completion.Result[1].String() != "data:image/png;base64,aW1n" {
+	completion := extractOpenAIResponseCompletion(&response)
+	if len(completion.Result) != 2 || completion.Result[1].Type() != ResultTypeImage || completion.Result[1].String() != "data:image/png;base64,aW1n" {
 		t.Fatalf("completion result = %#v", completion)
 	}
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ID != "call_1" {
 		t.Fatalf("tool use = %#v", completion.ToolUse)
 	}
-	if empty := extractOpenAIResponseCompletion(&responses.Response{Status: "completed"}, false); len(empty.Result) != 1 || empty.Result[0].Type() != ResultTypeText || empty.Result[0].String() != "" {
+	if empty := extractOpenAIResponseCompletion(&responsesResponse{Status: "completed"}); len(empty.Result) != 1 || empty.Result[0].Type() != ResultTypeText || empty.Result[0].String() != "" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 	responseTools := openAIResponseTools([]ToolDefinition{{Name: "lookup", Description: ptr("Lookup"), InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}})
-	if len(responseTools) != 1 || responseTools[0].OfFunction == nil || responseTools[0].OfFunction.Name != "lookup" {
+	if len(responseTools) != 1 || responseTools[0]["name"] != "lookup" {
 		t.Fatalf("response tools = %#v", responseTools)
 	}
-	if role := openAIResponsesSystemRole("o1-mini"); role != responses.EasyInputMessageRoleUser {
+	if role := openAIResponsesSystemRole("o1-mini"); role != "user" {
 		t.Fatalf("o1-mini role = %s", role)
 	}
-	if role := openAIResponsesSystemRole("o3-mini"); role != responses.EasyInputMessageRoleDeveloper {
+	if role := openAIResponsesSystemRole("o3-mini"); role != "developer" {
 		t.Fatalf("o3 role = %s", role)
 	}
 	if got := openAIReasoningEffort("gpt-5-pro", "low"); got != "high" {
@@ -511,7 +501,7 @@ func TestOpenAIResponsesStreamState(t *testing.T) {
 	if failed.FinishReason != "failed" {
 		t.Fatalf("failed = %#v", failed)
 	}
-	if empty := state.chunk(responses.ResponseStreamEventUnion{Type: "response.output_text.delta"}); len(empty.Result) != 0 {
+	if empty := state.chunk(responsesStreamEvent{Type: "response.output_text.delta"}); len(empty.Result) != 0 {
 		t.Fatalf("empty = %#v", empty)
 	}
 }
@@ -523,9 +513,9 @@ func assertRetryable(t *testing.T, got *bool, want bool) {
 	}
 }
 
-func openAIStreamEvent(t *testing.T, data string) responses.ResponseStreamEventUnion {
+func openAIStreamEvent(t *testing.T, data string) responsesStreamEvent {
 	t.Helper()
-	var event responses.ResponseStreamEventUnion
+	var event responsesStreamEvent
 	if err := json.Unmarshal([]byte(data), &event); err != nil {
 		t.Fatal(err)
 	}
