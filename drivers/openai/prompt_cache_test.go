@@ -3,6 +3,7 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -172,5 +173,32 @@ func TestOpenAIResponsesAttachments(t *testing.T) {
 		if !strings.Contains(input, want) {
 			t.Fatalf("input %s\nmissing %s", input, want)
 		}
+	}
+}
+
+// Mirrors the TS named tool choice tests on Responses.
+func TestOpenAIResponsesToolChoice(t *testing.T) {
+	t.Parallel()
+
+	tools := []ToolDefinition{{Name: "lookup"}}
+	body, _, err := executeResponses(t, ExecutionOptions{Tools: tools, ModelOptions: map[string]any{"required_tool_name": "lookup", "parallel_tool_calls": false}}, okResponse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := marshalNoEscape(body["tool_choice"]); got != `{"name":"lookup","type":"function"}` || body["parallel_tool_calls"] != false {
+		t.Fatalf("body = %#v", body)
+	}
+	body, _, err = executeResponses(t, ExecutionOptions{Tools: tools, ModelOptions: map[string]any{"tool_choice": "any"}}, okResponse)
+	if err != nil || body["tool_choice"] != "required" {
+		t.Fatalf("any: %v, %#v", err, body)
+	}
+	body, _, err = executeResponses(t, ExecutionOptions{ModelOptions: map[string]any{"parallel_tool_calls": true}}, okResponse)
+	if err != nil || body["parallel_tool_calls"] != nil || body["tool_choice"] != nil {
+		t.Fatalf("no tools: %v, %#v", err, body)
+	}
+	_, _, err = executeResponses(t, ExecutionOptions{ModelOptions: map[string]any{"tool_choice": "required"}}, okResponse)
+	var llumiverseErr *LlumiverseError
+	if !errors.As(err, &llumiverseErr) || llumiverseErr.Code != 400 || llumiverseErr.Name != "ToolChoiceConfigurationError" {
+		t.Fatalf("error = %#v", err)
 	}
 }

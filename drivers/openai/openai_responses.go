@@ -209,8 +209,11 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 	if isOpenAIImageModel(options.Model) {
 		return d.requestOpenAIImageGeneration(ctx, rp, options)
 	}
-	input := openAIResponsesInput(options.Conversation, rp.Items, len(options.Tools) > 0)
-	payload := d.responsePayload(input, options)
+	input := openAIResponsesInput(options.Conversation, rp.Items, openAIUseTools(options))
+	payload, err := d.responsePayload(input, options, false)
+	if err != nil {
+		return nil, err
+	}
 	var raw json.RawMessage
 	if err := d.sdk.Post(ctx, "responses", payload, &raw, d.requestOptions(options.HTTPTimeout)...); err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
@@ -236,9 +239,11 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 	rp := prompt.(openAIResponsesPrompt)
 	// Image generation models use the Images API path and do not stream through
 	// Responses; callers should use Execute for those models.
-	input := openAIResponsesInput(options.Conversation, rp.Items, len(options.Tools) > 0)
-	payload := d.responsePayload(input, options)
-	payload["stream"] = true
+	input := openAIResponsesInput(options.Conversation, rp.Items, openAIUseTools(options))
+	payload, err := d.responsePayload(input, options, true)
+	if err != nil {
+		return nil, err
+	}
 	var res *http.Response
 	if err := d.sdk.Post(ctx, "responses", payload, &res, d.requestOptions(options.HTTPTimeout)...); err != nil {
 		return nil, d.formatError(err, options.Model, "stream")
@@ -290,10 +295,13 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 // only sent for non-reasoning models; reasoning effort is mapped per-model;
 // tools are omitted for likely non-tool models; and a ResultSchema becomes a
 // json_schema text format (strict when convertible), skipped for realtime models.
-func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options ExecutionOptions) map[string]any {
+func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options ExecutionOptions, stream bool) (map[string]any, error) {
 	payload := map[string]any{
 		"model": options.Model,
 		"input": input,
+	}
+	if stream {
+		payload["stream"] = true
 	}
 	if key := openAIPromptCacheKey(options); key != "" {
 		payload["prompt_cache_key"] = key
@@ -326,13 +334,37 @@ func (d *OpenAICompatibleDriver) responsePayload(input []responseItem, options E
 	if len(options.Labels) > 0 {
 		payload["metadata"] = options.Labels
 	}
-	if len(options.Tools) > 0 && !isLikelyNonToolOpenAIModel(options.Model) {
+	mo := options.ModelOptions
+	requiredTool := optionString(mo, "required_tool_name")
+	toolChoice := optionString(mo, "tool_choice")
+	useTools := openAIUseTools(options)
+	if (requiredTool != "" || toolChoice == "required" || toolChoice == "any") && !useTools {
+		return nil, toolChoiceConfigurationError("[OpenAI Responses API] A required tool choice was requested, but no tools are available.", d.Provider(), options.Model, streamOperation(stream))
+	}
+	if useTools {
 		payload["tools"] = openAIResponseTools(options.Tools)
+		switch {
+		case requiredTool != "":
+			payload["tool_choice"] = map[string]any{"type": "function", "name": requiredTool}
+		case toolChoice == "any":
+			payload["tool_choice"] = "required"
+		case toolChoice != "":
+			payload["tool_choice"] = toolChoice
+		}
+		if v := optionBoolPtr(mo, "parallel_tool_calls"); v != nil {
+			payload["parallel_tool_calls"] = *v
+		}
 	}
 	if text := d.openAIResponseTextConfig(options); text != nil {
 		payload["text"] = text
 	}
-	return payload
+	return payload, nil
+}
+
+// openAIUseTools reports whether the request sends its tools: there are some
+// and the model takes tools.
+func openAIUseTools(options ExecutionOptions) bool {
+	return len(options.Tools) > 0 && !isLikelyNonToolOpenAIModel(options.Model)
 }
 
 // openAIResponseTextConfig builds the text config: a json_schema format for
