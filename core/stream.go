@@ -26,15 +26,13 @@ type channelStream struct {
 	toolOrder  []string                          // tool IDs in first-seen order, to keep output stable
 	lastToolID string                            // ID of the tool whose deltas are currently arriving
 	nextToolID int                               // counter for synthesizing IDs when a provider omits them
+	errContext LlumiverseErrorContext            // provider and model for errors raised while finalizing
+	finalErr   error                             // error Recv returns instead of io.EOF, set by finalizeCompletion
 }
 
 // streamToolAccumulator gathers the deltas for a single streamed tool call.
-// When arguments arrive as partial JSON strings they are appended to stringInput
-// (usesStringBuf) and parsed once the stream completes.
 type streamToolAccumulator struct {
-	tool          ToolUseChunk
-	stringInput   string
-	usesStringBuf bool
+	tool ToolUseChunk
 }
 
 // StreamItem is one value carried on the stream channel: either a chunk or an error.
@@ -58,10 +56,15 @@ func newChannelStreamWithFinalizer(ch <-chan StreamItem, completion *ExecutionRe
 
 // Recv returns the next chunk, applying it to the accumulated completion, or
 // io.EOF once the stream is exhausted (at which point the completion is finalized).
+// When finalizing finds a streamed tool call it cannot return, Recv returns that
+// error instead of io.EOF.
 func (s *channelStream) Recv() (CompletionChunk, error) {
 	item, ok := <-s.ch
 	if !ok {
 		s.finalizeCompletion()
+		if s.finalErr != nil {
+			return CompletionChunk{}, s.finalErr
+		}
 		return CompletionChunk{}, io.EOF
 	}
 	if item.Err == nil {
@@ -128,11 +131,8 @@ func (s *channelStream) applyChunk(chunk CompletionChunk) {
 
 // mergeStreamTools accumulates streamed tool-call deltas into per-ID
 // accumulators, synthesizing an ID when the provider omits one and reusing the
-// last seen ID for continuation deltas. String argument fragments are appended
-// for later parsing; object arguments are merged key-by-key.
+// last seen ID for continuation deltas.
 func (s *channelStream) mergeStreamTools(tools []ToolUseChunk) {
-	// Tool-call arguments often arrive as partial JSON strings. Preserve order
-	// by tool ID and stitch string deltas before exposing the final tool list.
 	if s.tools == nil {
 		s.tools = map[string]*streamToolAccumulator{}
 	}
@@ -152,41 +152,16 @@ func (s *channelStream) mergeStreamTools(tools []ToolUseChunk) {
 			s.toolOrder = append(s.toolOrder, id)
 		}
 		s.lastToolID = id
-		if tool.ToolName != "" {
-			acc.tool.ToolName = tool.ToolName
-		}
-		if tool.ThoughtSignature != "" {
-			// Gemini's thought signature is opaque base64 that must be sent back
-			// verbatim. A large one can arrive in pieces, or only on a later
-			// fragment, so the fragments are concatenated in arrival order like
-			// argument strings; a signature sent whole is a single fragment.
-			acc.tool.ThoughtSignature += tool.ThoughtSignature
-		}
-		if tool.ToolInput == nil {
-			continue
-		}
-		if value, ok := tool.ToolInput.(string); ok {
-			acc.stringInput += value
-			acc.usesStringBuf = true
-			acc.tool.ToolInput = acc.stringInput
-			continue
-		}
-		if existing, ok := acc.tool.ToolInput.(map[string]any); ok {
-			if incoming, ok := tool.ToolInput.(map[string]any); ok {
-				maps.Copy(existing, incoming)
-				acc.tool.ToolInput = existing
-				continue
-			}
-		}
-		acc.tool.ToolInput = tool.ToolInput
+		tool.ID = id
+		accumulateToolUseChunk(&acc.tool, tool)
 	}
 }
 
 // finalizeCompletion is run once when the stream ends: it sets ExecutionTime,
-// reconciles the token-usage total, then parses each accumulated tool's stitched
-// string arguments into JSON. A tool whose buffered arguments fail to parse is
-// marked truncated, and such tools are dropped when FinishReason=="length"
-// (the model was cut off mid tool call). Finally any finalizer hook runs.
+// reconciles the token-usage total, then finalizes the accumulated tool calls
+// with FinalizeStreamingToolUse. A tool call with malformed arguments is left
+// out of the completion, and unless the response was cut off it is reported as
+// the stream's final error. Finally any finalizer hook runs.
 func (s *channelStream) finalizeCompletion() {
 	s.finalOnce.Do(func() {
 		if s.completion == nil {
@@ -198,39 +173,13 @@ func (s *channelStream) finalizeCompletion() {
 				usage.Total = &sum
 			}
 		}
-		if len(s.toolOrder) == 0 {
-			if s.finalizer != nil {
-				s.finalizer(s.completion)
+		if len(s.toolOrder) > 0 {
+			chunks := make([]ToolUseChunk, 0, len(s.toolOrder))
+			for _, id := range s.toolOrder {
+				chunks = append(chunks, s.tools[id].tool)
 			}
-			return
+			s.completion.ToolUse, s.finalErr = finalizeStreamingToolUse(chunks, s.completion.FinishReason, s.errContext)
 		}
-		truncated := map[string]bool{}
-		tools := make([]ToolUse, 0, len(s.toolOrder))
-		for _, id := range s.toolOrder {
-			acc := s.tools[id]
-			if acc == nil {
-				continue
-			}
-			input := acc.tool.ToolInput
-			if acc.usesStringBuf {
-				var parsed any
-				if err := json.Unmarshal([]byte(acc.stringInput), &parsed); err == nil {
-					input = parsed
-				} else {
-					input = map[string]any{}
-					truncated[id] = true
-				}
-			}
-			tool := ToolUse{ID: acc.tool.ID, ToolName: acc.tool.ToolName, ToolInput: ToolInputObject(input)}
-			if acc.tool.ThoughtSignature != "" {
-				tool.ThoughtSignature = &acc.tool.ThoughtSignature
-			}
-			if s.completion.FinishReason == "length" && truncated[id] {
-				continue
-			}
-			tools = append(tools, tool)
-		}
-		s.completion.ToolUse = tools
 		if s.finalizer != nil {
 			s.finalizer(s.completion)
 		}

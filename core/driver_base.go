@@ -86,6 +86,10 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 	if stream == nil {
 		return nil, errors.New("driver returned nil stream")
 	}
+	if channel, ok := stream.(*channelStream); ok {
+		// Errors raised while finalizing the stream name the provider and model.
+		channel.errContext = LlumiverseErrorContext{Provider: driver.Provider(), Model: options.Model, Operation: "stream"}
+	}
 	if completion := stream.Completion(); completion != nil {
 		if completion.Prompt == nil {
 			completion.Prompt = prompt
