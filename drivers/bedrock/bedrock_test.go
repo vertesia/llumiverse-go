@@ -376,7 +376,8 @@ func TestBedrockListModelsIncludesCustomAndInferenceProfiles(t *testing.T) {
 	if !aws.ToBool(byID["arn:custom:model"].IsCustom) || aws.ToString(byID["arn:custom:model"].Owner) != "custom" {
 		t.Fatalf("custom model = %#v", byID["arn:custom:model"])
 	}
-	if aws.ToString(byID["arn:profile:anthropic"].Owner) != "anthropic" {
+	// The profile takes the publisher name the foundation catalog reports.
+	if aws.ToString(byID["arn:profile:anthropic"].Owner) != "Anthropic" {
 		t.Fatalf("profile model = %#v", byID["arn:profile:anthropic"])
 	}
 }

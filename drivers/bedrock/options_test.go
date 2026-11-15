@@ -92,3 +92,15 @@ func TestBedrockInferenceConfigSamplingPrecedence(t *testing.T) {
 		t.Fatal("caller options modified")
 	}
 }
+
+// Mirrors the TS "Bedrock Converse Grok options" suite.
+func TestBedrockGrokEffort(t *testing.T) {
+	runtime := bedrockOptionsRequest(t, "global.xai.grok-4.7", nil, ExecutionOptions{ModelOptions: map[string]any{"effort": "xhigh", "max_tokens": 100}})
+	if got := bedrockAdditionalFieldsJSON(t, runtime); got != `{"reasoning":{"effort":"xhigh"}}` {
+		t.Fatalf("additional fields = %s", got)
+	}
+	runtime = bedrockOptionsRequest(t, "us.xai.grok-4.7", nil, ExecutionOptions{ModelOptions: map[string]any{"max_tokens": 100}})
+	if runtime.got.AdditionalModelRequestFields != nil {
+		t.Fatalf("default fields = %s", bedrockAdditionalFieldsJSON(t, runtime))
+	}
+}

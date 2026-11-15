@@ -81,6 +81,12 @@ func bedrockFamilyFields(options ExecutionOptions) map[string]any {
 		if len(text) > 0 {
 			out["text"] = text
 		}
+	case strings.Contains(model, "xai.grok-"):
+		// Grok reads effort from the same reasoning field as GPT; omission keeps
+		// the provider default.
+		if effort := bedrockOpenAIEffort(opts); effort != "" {
+			out["reasoning"] = map[string]any{"effort": effort}
+		}
 	case strings.Contains(model, "gpt-oss"):
 		if v := optionString(opts, "reasoning_effort"); v != "" {
 			out["reasoning_effort"] = v

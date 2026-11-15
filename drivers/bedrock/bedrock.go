@@ -1790,6 +1790,18 @@ func (d *BedrockDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) (
 		return nil, d.formatError(err, "", "listModels")
 	}
 	models := make([]AIModel, 0, len(output.ModelSummaries))
+	// Inference profiles carry no publisher name, so they reuse the display
+	// name the foundation catalog reports for their publisher (for example
+	// "Z.ai" or "Moonshot AI") and are grouped with its other models.
+	publisherNames := map[string]string{}
+	for _, summary := range output.ModelSummaries {
+		name := aws.ToString(summary.ProviderName)
+		if key := bedrockPublisherKey(name); key != "" {
+			if _, ok := publisherNames[key]; !ok {
+				publisherNames[key] = name
+			}
+		}
+	}
 	for _, summary := range output.ModelSummaries {
 		if !bedrockModelSupported(summary) {
 			continue
@@ -1805,7 +1817,7 @@ func (d *BedrockDriver) ListModels(ctx context.Context, _ *ModelSearchPayload) (
 	}
 	if profiles, err := d.models.ListInferenceProfiles(ctx, &bedrock.ListInferenceProfilesInput{}); err == nil {
 		for _, summary := range profiles.InferenceProfileSummaries {
-			if model, ok := bedrockInferenceProfileAIModel(summary); ok {
+			if model, ok := bedrockInferenceProfileAIModel(summary, publisherNames); ok {
 				models = append(models, model)
 			}
 		}
@@ -1917,7 +1929,9 @@ func bedrockIsEmbeddingModel(model string) bool {
 
 // bedrockInferenceProfileAIModel maps an inference profile to an AIModel,
 // returning false when it lacks an ID or its inferred publisher is unsupported.
-func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary) (AIModel, bool) {
+// The owner is the publisher's display name from publisherNames when known,
+// else its publisher key.
+func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary, publisherNames map[string]string) (AIModel, bool) {
 	id := aws.ToString(summary.InferenceProfileArn)
 	if id == "" {
 		id = aws.ToString(summary.InferenceProfileId)
@@ -1933,11 +1947,15 @@ func bedrockInferenceProfileAIModel(summary bedrocktypes.InferenceProfileSummary
 	if name == "" {
 		name = id
 	}
+	owner := provider
+	if display, ok := publisherNames[provider]; ok {
+		owner = display
+	}
 	return AIModel{
 		ID:               id,
 		Name:             name,
 		Provider:         string(ProviderBedrock),
-		Owner:            ptr(provider),
+		Owner:            ptr(owner),
 		Type:             ptr(ModelType("text")),
 		InputModalities:  ptr(bedrockCapabilitiesInput(id)),
 		OutputModalities: ptr(bedrockCapabilitiesOutput(id)),
@@ -1997,7 +2015,7 @@ func bedrockNormalizePublisher(provider string) string {
 // path is verified, and its future models are listed without further changes.
 func bedrockSupportedPublishers() []string {
 	return []string{"amazon", "anthropic", "cohere", "ai21", "mistral", "meta", "deepseek", "writer", "openai", "twelvelabs", "qwen",
-		"google", "minimax", "moonshot", "moonshotai", "nvidia", "zai"}
+		"google", "minimax", "moonshot", "moonshotai", "nvidia", "zai", "xai"}
 }
 
 // bedrockUnsupportedModels returns model-id substrings to exclude for a given
@@ -2006,7 +2024,9 @@ func bedrockUnsupportedModels(provider string) []string {
 	normalized := bedrockNormalizePublisher(provider)
 	switch {
 	case strings.Contains(normalized, "amazon"):
-		return []string{"titan-image-generator", "nova-reel", "nova-sonic", "rerank"}
+		// Sonic, in every generation (nova-sonic, nova-2-sonic, ...), is a
+		// bidirectional speech-to-speech stream, not Converse.
+		return []string{"titan-image-generator", "nova-reel", "sonic", "rerank"}
 	case strings.Contains(normalized, "cohere"):
 		return []string{"rerank", "embed"}
 	case strings.Contains(normalized, "twelvelabs"):

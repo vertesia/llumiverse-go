@@ -3,6 +3,7 @@ package bedrock
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -127,6 +128,12 @@ func TestBedrockListModelsDiscoversKnownPublishers(t *testing.T) {
 		{"writer.palmyra-x6-v1:0", true},
 		{"zai.glm-6", true},
 		{"amazon.titan-image-generator-v3", false},
+		// Every Sonic generation is a bidirectional speech stream rather than Converse.
+		{"amazon.nova-sonic-v1:0", false},
+		{"amazon.nova-2-sonic-v1:0", false},
+		{"amazon.nova-2-5-sonic", false},
+		{"xai.grok-4.7", true},
+		{"amazon.nova-canvas-v2:0", true},
 		{"unverified.model-1", false},
 	}
 	summaries := make([]bedrocktypes.FoundationModelSummary, 0, len(cases))
@@ -153,6 +160,40 @@ func TestBedrockListModelsDiscoversKnownPublishers(t *testing.T) {
 	}
 	if _, ok := listed["zai.glm-7"]; !ok {
 		t.Error("Z.AI model not listed")
+	}
+}
+
+// Mirrors the TS "groups inference profiles under the publisher name AWS reports for foundation models".
+func TestBedrockListModelsGroupsProfilesUnderPublisherName(t *testing.T) {
+	driver := NewBedrockDriverWithClient(BedrockOptions{Region: "us-east-2"}, &fakeBedrockRuntime{}, &fakeBedrockModels{
+		foundation: &bedrock.ListFoundationModelsOutput{ModelSummaries: []bedrocktypes.FoundationModelSummary{
+			bedrockTestFoundationModel("zai.glm-5", "Z.ai", "GLM 5"),
+			bedrockTestFoundationModel("moonshotai.kimi-k2.5", "Moonshot AI", "Kimi K2.5"),
+		}},
+		profiles: &bedrock.ListInferenceProfilesOutput{InferenceProfileSummaries: []bedrocktypes.InferenceProfileSummary{
+			{
+				InferenceProfileArn:  aws.String("arn:aws:bedrock:us-east-2::inference-profile/global.zai.glm-5.3"),
+				InferenceProfileId:   aws.String("global.zai.glm-5.3"),
+				InferenceProfileName: aws.String("Z.AI GLM 5.3"),
+			},
+			{
+				InferenceProfileArn:  aws.String("arn:aws:bedrock:us-east-2::inference-profile/global.moonshotai.kimi-k3"),
+				InferenceProfileId:   aws.String("global.moonshotai.kimi-k3"),
+				InferenceProfileName: aws.String("Moonshot AI Kimi K3"),
+			},
+		}},
+	})
+	models, err := driver.ListModels(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	owners := map[string]string{}
+	for _, model := range models {
+		owners[model.Name] = aws.ToString(model.Owner)
+	}
+	want := map[string]string{"GLM 5": "Z.ai", "Z.AI GLM 5.3": "Z.ai", "Kimi K2.5": "Moonshot AI", "Moonshot AI Kimi K3": "Moonshot AI"}
+	if !reflect.DeepEqual(owners, want) {
+		t.Fatalf("owners = %#v", owners)
 	}
 }
 
