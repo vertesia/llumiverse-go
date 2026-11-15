@@ -278,7 +278,7 @@ func TestOpenAIResponsesConversationToolItemsBecomeTextWithoutTools(t *testing.T
 			t.Fatal(err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4.1","output":[]}`))
+		_, _ = w.Write([]byte(`{"id":"resp_1","object":"response","created_at":1,"status":"completed","model":"gpt-4.1","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`))
 	}))
 	defer server.Close()
 

@@ -223,7 +223,16 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletion(ctx context.Context,
 	if err := json.Unmarshal(raw, &response); err != nil {
 		return nil, err
 	}
+	errContext := LlumiverseErrorContext{Provider: d.Provider(), Model: options.Model, Operation: "execute"}
+	if response.Status == "failed" {
+		return nil, openAIResponseFailure(&response, errContext)
+	}
 	completion := extractOpenAIResponseCompletion(&response, openAIIncludeThoughts(options))
+	// A cut-off stop with nothing left to return is still a valid result: the
+	// stop is what the caller needs.
+	if len(completion.Result) == 0 && len(completion.ToolUse) == 0 && !core.IsCutOffFinishReason(completion.FinishReason) {
+		return nil, errors.New("response is not valid: no data")
+	}
 	if options.IncludeOriginalResponse {
 		var original any
 		_ = json.Unmarshal(raw, &original)
@@ -251,10 +260,9 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 	}
 	ch := make(chan streamItem)
 	completion := &ExecutionResponse{Prompt: prompt}
-	state := &openAIResponsesStreamState{includeThoughts: openAIIncludeThoughts(options)}
+	state := newOpenAIResponsesStreamState(openAIIncludeThoughts(options), LlumiverseErrorContext{Provider: d.Provider(), Model: options.Model, Operation: "stream"})
 	go func() {
 		defer close(ch)
-		state.tools = map[string]openAIResponsesStreamTool{}
 		err := core.ScanSSE(res.Body, func(event core.SSEEvent) error {
 			if event.Data == "" || event.Data == "[DONE]" {
 				return nil
@@ -263,10 +271,8 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 			if err := json.Unmarshal([]byte(event.Data), &decoded); err != nil {
 				return err
 			}
-			out, err := state.chunk(decoded)
-			if err != nil {
-				return err
-			}
+			// A chunk is sent even with an error, so a failed response keeps its usage.
+			out, chunkErr := state.chunk(decoded)
 			if len(out.Result) > 0 || len(out.ToolUse) > 0 || out.FinishReason != "" || out.TokenUsage != nil {
 				select {
 				case ch <- streamItem{Chunk: out}:
@@ -274,7 +280,7 @@ func (d *OpenAICompatibleDriver) requestResponsesCompletionStream(ctx context.Co
 					return ctx.Err()
 				}
 			}
-			return nil
+			return chunkErr
 		})
 		if err != nil {
 			select {
@@ -564,18 +570,60 @@ func extractOpenAIResponseCompletion(response *responsesResponse, includeThought
 		return &Completion{Result: []CompletionResult{newTextResult("")}}
 	}
 	result := openAIResponseResults(response.Output, includeThoughts)
-	tools := openAIResponseToolUses(response.Output)
-	completion := &Completion{
+	output := response.Output
+	// An incomplete response may have stopped inside its last function call.
+	// That call is left out when its arguments are not complete JSON, rather
+	// than returned with invented empty input; earlier calls had finished.
+	if response.Status == "incomplete" {
+		for i := len(output) - 1; i >= 0; i-- {
+			if output[i].Type == "function_call" {
+				if !core.IsJSONObjectText(output[i].Arguments) {
+					output = append(append([]responsesOutputItem{}, output[:i]...), output[i+1:]...)
+				}
+				break
+			}
+		}
+	}
+	tools := openAIResponseToolUses(output)
+	return &Completion{
 		Result:       result,
 		TokenUsage:   openAIResponseUsage(response.Usage, response.ToolUsage),
 		ToolUse:      tools,
 		FinishReason: openAIResponseFinishReason(response, len(tools) > 0),
 		ServiceTier:  response.ServiceTier,
 	}
-	if len(completion.Result) == 0 && len(completion.ToolUse) == 0 {
-		completion.Result = []CompletionResult{newTextResult("")}
+}
+
+// openAIResponseFailure is the error of a failed response: its code maps to
+// an HTTP status, and unknown codes are non-retryable request errors so one
+// billed failure cannot fan out into a retry storm.
+func openAIResponseFailure(response *responsesResponse, errContext LlumiverseErrorContext) error {
+	code, detail := "response_failed", "The provider returned a failed response without error details."
+	if response.Error != nil {
+		if response.Error.Code != "" {
+			code = response.Error.Code
+		}
+		if response.Error.Message != "" {
+			detail = response.Error.Message
+		}
 	}
-	return completion
+	message := fmt.Sprintf("[OpenAI Responses API] %s (%s)", detail, code)
+	if response.ID != "" {
+		message += " [response " + response.ID + "]"
+	}
+	status := http.StatusBadRequest
+	switch code {
+	case "rate_limit_exceeded":
+		status = http.StatusTooManyRequests
+	case "server_error":
+		status = http.StatusInternalServerError
+	case "vector_store_timeout":
+		status = http.StatusRequestTimeout
+	case "image_file_not_found":
+		status = http.StatusNotFound
+	}
+	retryable := status == http.StatusTooManyRequests || status == http.StatusInternalServerError || status == http.StatusRequestTimeout
+	return newLlumiverseError(message, boolPtr(retryable), errContext, errors.New(message), status, "OpenAIResponseError")
 }
 
 // openAIResponseResults extracts reasoning summaries (as thoughts), text and
@@ -669,16 +717,12 @@ func openAIResponseUsage(usage *responsesUsage, toolUsage *responsesToolUsage) *
 }
 
 // openAIResponseFinishReason maps the Responses status into a canonical finish
-// reason: "tool_use" when tool calls are present, "stop" on completion, and
-// "length"/the incomplete reason otherwise.
+// reason. An incomplete response reports its stop ("length" or the incomplete
+// reason) even when calls are present, so callers do not mistake them for a
+// completed tool_use turn; otherwise "tool_use" when tool calls are present,
+// "stop" on completion, and the status itself for anything else.
 func openAIResponseFinishReason(response *responsesResponse, toolUse bool) string {
-	if toolUse {
-		return "tool_use"
-	}
-	switch response.Status {
-	case "completed":
-		return "stop"
-	case "incomplete":
+	if response.Status == "incomplete" {
 		reason := ""
 		if response.IncompleteDetails != nil {
 			reason = response.IncompleteDetails.Reason
@@ -690,9 +734,14 @@ func openAIResponseFinishReason(response *responsesResponse, toolUse bool) strin
 			return reason
 		}
 		return "incomplete"
-	default:
+	}
+	if toolUse {
+		return "tool_use"
+	}
+	if response.Status != "" && response.Status != "completed" {
 		return response.Status
 	}
+	return "stop"
 }
 
 // responsesStreamEvent is one Responses API stream event, with the fields of
@@ -721,12 +770,28 @@ type openAIResponsesStreamTool struct {
 // openAIResponsesStreamState accumulates per-stream tool metadata, keyed by both
 // item ID and call ID, so argument-delta events resolve to the right tool call.
 type openAIResponsesStreamState struct {
-	tools           map[string]openAIResponsesStreamTool
+	tools map[string]openAIResponsesStreamTool
+	// withArguments holds the ids of the calls whose arguments were already
+	// emitted, from deltas or a completed event.
+	withArguments map[string]bool
+	// emittedImages holds the ids of the generated images already emitted.
+	emittedImages   map[string]bool
+	errContext      LlumiverseErrorContext
 	hasTextDeltas   bool
 	refusal         string
 	includeThoughts bool
 	// final is the terminal response, whose output items become the conversation.
 	final *responsesResponse
+}
+
+func newOpenAIResponsesStreamState(includeThoughts bool, errContext LlumiverseErrorContext) *openAIResponsesStreamState {
+	return &openAIResponsesStreamState{
+		tools:           map[string]openAIResponsesStreamTool{},
+		withArguments:   map[string]bool{},
+		emittedImages:   map[string]bool{},
+		errContext:      errContext,
+		includeThoughts: includeThoughts,
+	}
 }
 
 // chunk advances the streaming state machine for one Responses event, emitting a
@@ -762,7 +827,38 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (Completi
 		if id == "" {
 			id = fmt.Sprintf("tool_%d", event.OutputIndex)
 		}
+		if event.Delta != "" {
+			s.withArguments[id] = true
+		}
 		return CompletionChunk{ToolUse: []ToolUseChunk{{ID: id, ToolName: meta.name, ToolInput: event.Delta}}}, nil
+	case "response.function_call_arguments.done":
+		// Some Responses-compatible endpoints send a call's arguments only in
+		// its completed events, without deltas.
+		meta := s.tools[event.ItemID]
+		id := meta.id
+		if id == "" {
+			id = event.ItemID
+		}
+		if id == "" {
+			id = fmt.Sprintf("tool_%d", event.OutputIndex)
+		}
+		if tool, ok := s.completedCallArguments(id, meta.name, event.Arguments); ok {
+			return CompletionChunk{ToolUse: []ToolUseChunk{tool}}, nil
+		}
+	case "response.output_item.done":
+		if event.Item == nil {
+			break
+		}
+		switch event.Item.Type {
+		case "function_call":
+			if tool, ok := s.completedCallArguments(s.streamCallID(*event.Item, event.OutputIndex), event.Item.Name, event.Item.Arguments); ok {
+				return CompletionChunk{ToolUse: []ToolUseChunk{tool}}, nil
+			}
+		case "image_generation_call":
+			if results := s.newImages([]responsesOutputItem{*event.Item}); len(results) > 0 {
+				return CompletionChunk{Result: results}, nil
+			}
+		}
 	case "response.output_text.delta":
 		s.hasTextDeltas = true
 		if event.Delta != "" {
@@ -799,14 +895,72 @@ func (s *openAIResponsesStreamState) chunk(event responsesStreamEvent) (Completi
 			return CompletionChunk{}, nil
 		}
 		s.final = event.Response
+		var missed []ToolUseChunk
+		for i, item := range event.Response.Output {
+			if item.Type != "function_call" {
+				continue
+			}
+			if tool, ok := s.completedCallArguments(s.streamCallID(item, i), item.Name, item.Arguments); ok {
+				missed = append(missed, tool)
+			}
+		}
 		tools := openAIResponseToolUses(event.Response.Output)
-		return CompletionChunk{
-			FinishReason: openAIResponseFinishReason(event.Response, event.Type != "response.failed" && len(tools) > 0),
+		chunk := CompletionChunk{
+			Result:       s.newImages(event.Response.Output),
+			ToolUse:      missed,
+			FinishReason: openAIResponseFinishReason(event.Response, len(tools) > 0),
 			TokenUsage:   openAIResponseUsage(event.Response.Usage, event.Response.ToolUsage),
 			ServiceTier:  event.Response.ServiceTier,
-		}, nil
+		}
+		// The usage of a failed response is kept; the error follows it.
+		if event.Response.Status == "failed" {
+			return chunk, openAIResponseFailure(event.Response, s.errContext)
+		}
+		return chunk, nil
 	}
 	return CompletionChunk{}, nil
+}
+
+// streamCallID is the id a streamed call was announced with: its call id, its
+// item id, or its output position.
+func (s *openAIResponsesStreamState) streamCallID(item responsesOutputItem, outputIndex int) string {
+	if item.CallID != "" {
+		return item.CallID
+	}
+	if item.ID != "" {
+		if meta, ok := s.tools[item.ID]; ok {
+			return meta.id
+		}
+		return item.ID
+	}
+	return fmt.Sprintf("tool_%d", outputIndex)
+}
+
+// completedCallArguments returns the arguments of a completed call unless
+// they were already emitted for it. Only a complete JSON object is taken: a
+// response cut off inside its last call must leave that call without
+// arguments, so the cut-off rules drop it.
+func (s *openAIResponsesStreamState) completedCallArguments(id, name, arguments string) (ToolUseChunk, bool) {
+	if arguments == "" || s.withArguments[id] || !core.IsJSONObjectText(arguments) {
+		return ToolUseChunk{}, false
+	}
+	s.withArguments[id] = true
+	return ToolUseChunk{ID: id, ToolName: name, ToolInput: arguments}, true
+}
+
+// newImages returns the generated images of items not emitted yet.
+func (s *openAIResponsesStreamState) newImages(items []responsesOutputItem) []CompletionResult {
+	var results []CompletionResult
+	for _, item := range items {
+		if item.Type != "image_generation_call" || s.emittedImages[item.ID] {
+			continue
+		}
+		if images := openAIResponseResults([]responsesOutputItem{item}, false); len(images) > 0 {
+			s.emittedImages[item.ID] = true
+			results = append(results, images...)
+		}
+	}
+	return results
 }
 
 // openAIResponsesSystemRole picks the role used for system/safety instructions:

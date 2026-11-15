@@ -373,7 +373,7 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 	if len(completion.ToolUse) != 1 || completion.ToolUse[0].ID != "call_1" {
 		t.Fatalf("tool use = %#v", completion.ToolUse)
 	}
-	if empty := extractOpenAIResponseCompletion(&responsesResponse{Status: "completed"}, true); len(empty.Result) != 1 || empty.Result[0].Type() != ResultTypeText || empty.Result[0].String() != "" {
+	if empty := extractOpenAIResponseCompletion(&responsesResponse{Status: "completed"}, true); len(empty.Result) != 0 || empty.FinishReason != "stop" {
 		t.Fatalf("empty completion = %#v", empty)
 	}
 	responseTools := openAIResponseTools([]ToolDefinition{{Name: "lookup", Description: ptr("Lookup"), InputSchema: map[string]any{"type": "object", "properties": map[string]any{"q": map[string]any{"type": "string"}}}}})
@@ -408,7 +408,7 @@ func TestOpenAISchemaAndResponseHelpers(t *testing.T) {
 func TestOpenAIResponsesStreamState(t *testing.T) {
 	t.Parallel()
 
-	state := openAIResponsesStreamState{tools: map[string]openAIResponsesStreamTool{}}
+	state := newOpenAIResponsesStreamState(false, LlumiverseErrorContext{})
 	start, _ := state.chunk(openAIStreamEvent(t, `{
 		"type":"response.output_item.added",
 		"output_index":0,

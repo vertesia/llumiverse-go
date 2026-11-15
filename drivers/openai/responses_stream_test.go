@@ -17,7 +17,7 @@ func streamResponses(t *testing.T, options ExecutionOptions, events ...string) (
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, event := range events {
-			writeOpenAISSE(t, w, event)
+			writeOpenAISSE(t, w, strings.NewReplacer("\n", "", "\t", "").Replace(event))
 		}
 	}))
 	defer server.Close()
