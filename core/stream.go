@@ -142,7 +142,11 @@ func (s *channelStream) mergeStreamTools(tools []ToolUseChunk) {
 			acc.tool.ToolName = tool.ToolName
 		}
 		if tool.ThoughtSignature != "" {
-			acc.tool.ThoughtSignature = tool.ThoughtSignature
+			// Gemini's thought signature is opaque base64 that must be sent back
+			// verbatim. A large one can arrive in pieces, or only on a later
+			// fragment, so the fragments are concatenated in arrival order like
+			// argument strings; a signature sent whole is a single fragment.
+			acc.tool.ThoughtSignature += tool.ThoughtSignature
 		}
 		if tool.ToolInput == nil {
 			continue

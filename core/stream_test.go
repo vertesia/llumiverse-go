@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bytes"
+	"encoding/base64"
 	"errors"
 	"io"
 	"testing"
@@ -161,4 +163,103 @@ func TestChannelStreamHandlesNilCompletion(t *testing.T) {
 	if stream.Completion() != nil {
 		t.Fatalf("completion = %#v", stream.Completion())
 	}
+}
+
+// drainStream reads stream to the end and returns the first error other than io.EOF.
+func drainStream(t *testing.T, stream CompletionStream) error {
+	t.Helper()
+	for {
+		_, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+// streamToolChunks runs fragments through a channel stream, one chunk per fragment, with
+// finishReason on the last chunk, and returns the finished stream.
+func streamToolChunks(t *testing.T, finishReason string, fragments ...ToolUseChunk) (CompletionStream, error) {
+	t.Helper()
+	ch := make(chan StreamItem, len(fragments))
+	for i, fragment := range fragments {
+		chunk := CompletionChunk{ToolUse: []ToolUseChunk{fragment}}
+		if i == len(fragments)-1 {
+			chunk.FinishReason = finishReason
+		}
+		ch <- StreamItem{Chunk: chunk}
+	}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	return stream, drainStream(t, stream)
+}
+
+// Mirrors the TS client's "streaming tool_use thought_signature reassembly" tests.
+func TestChannelStreamReassemblesThoughtSignature(t *testing.T) {
+	t.Parallel()
+
+	raw := make([]byte, 9000)
+	for i := range raw {
+		raw[i] = byte((i*37 + 11) % 256)
+	}
+	signature := base64.StdEncoding.EncodeToString(raw)
+	args := `{"query":"weather in Paris"}`
+
+	t.Run("split across chunks", func(t *testing.T) {
+		const pieces = 5
+		sigSize := (len(signature) + pieces - 1) / pieces
+		argSize := (len(args) + pieces - 1) / pieces
+		var fragments []ToolUseChunk
+		for i := range pieces {
+			fragment := ToolUseChunk{
+				ID:               "get_weather",
+				ThoughtSignature: signature[min(i*sigSize, len(signature)):min((i+1)*sigSize, len(signature))],
+				ToolInput:        args[min(i*argSize, len(args)):min((i+1)*argSize, len(args))],
+			}
+			if i == 0 {
+				fragment.ToolName = "get_weather"
+			}
+			fragments = append(fragments, fragment)
+		}
+		stream, err := streamToolChunks(t, "tool_use", fragments...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		tools := stream.Completion().ToolUse
+		if len(tools) != 1 || tools[0].ThoughtSignature == nil || *tools[0].ThoughtSignature != signature {
+			t.Fatalf("signature not reassembled: %#v", tools)
+		}
+		decoded, err := base64.StdEncoding.DecodeString(*tools[0].ThoughtSignature)
+		if err != nil || !bytes.Equal(decoded, raw) {
+			t.Fatalf("signature does not decode to the original bytes: %v", err)
+		}
+		if (*tools[0].ToolInput)["query"] != "weather in Paris" {
+			t.Fatalf("arguments = %#v", tools[0].ToolInput)
+		}
+	})
+
+	t.Run("only on a later chunk", func(t *testing.T) {
+		stream, err := streamToolChunks(t, "tool_use",
+			ToolUseChunk{ID: "plan", ToolName: "plan", ToolInput: `{"steps":`},
+			ToolUseChunk{ID: "plan", ToolInput: `[]}`, ThoughtSignature: signature},
+		)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tools := stream.Completion().ToolUse; len(tools) != 1 || *tools[0].ThoughtSignature != signature {
+			t.Fatalf("tools = %#v", tools)
+		}
+	})
+
+	t.Run("whole in a single chunk", func(t *testing.T) {
+		stream, err := streamToolChunks(t, "tool_use", ToolUseChunk{ID: "plan", ToolName: "plan", ToolInput: `{}`, ThoughtSignature: signature})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if tools := stream.Completion().ToolUse; len(tools) != 1 || *tools[0].ThoughtSignature != signature {
+			t.Fatalf("tools = %#v", tools)
+		}
+	})
 }
