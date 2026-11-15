@@ -1330,7 +1330,7 @@ func TestBedrockAdditionalFieldsAndErrorFormatting(t *testing.T) {
 			"include_thoughts": true,
 			"top_k":            10,
 		},
-	})
+	}, false)
 	if additional["top_k"] != nil || additional["output_config"].(map[string]any)["effort"] != "high" {
 		t.Fatalf("adaptive fields = %#v", additional)
 	}
@@ -1341,7 +1341,7 @@ func TestBedrockAdditionalFieldsAndErrorFormatting(t *testing.T) {
 	additional = bedrockAdditionalFields(ExecutionOptions{
 		Model:        "mistral.large",
 		ModelOptions: map[string]any{"top_k": 40, "reasoning_effort": "medium"},
-	})
+	}, false)
 	if additional["top_k"] != 40 || additional["reasoning_effort"] != "medium" {
 		t.Fatalf("non-Claude fields = %#v", additional)
 	}

@@ -712,7 +712,10 @@ func (d *BedrockDriver) requestTextCompletion(ctx context.Context, prompt any, o
 	}
 	bp := prompt.(bedrockPrompt)
 	bp = bedrockConversationInput(options.Conversation, bp)
-	input := d.converseInput(bp, options)
+	input, err := d.converseInput(bp, options, "execute")
+	if err != nil {
+		return nil, err
+	}
 	output, err := d.runtime.Converse(ctx, input, d.runtimeOptions(options.HTTPTimeout)...)
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "execute")
@@ -734,7 +737,11 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 	}
 	bp := prompt.(bedrockPrompt)
 	bp = bedrockConversationInput(options.Conversation, bp)
-	stream, err := d.runtime.ConverseStream(ctx, d.converseStreamInput(bp, options), d.runtimeOptions(options.HTTPTimeout)...)
+	input, err := d.converseStreamInput(bp, options)
+	if err != nil {
+		return nil, err
+	}
+	stream, err := d.runtime.ConverseStream(ctx, input, d.runtimeOptions(options.HTTPTimeout)...)
 	if err != nil {
 		return nil, d.formatError(err, options.Model, "stream")
 	}
@@ -768,8 +775,13 @@ func (d *BedrockDriver) requestTextCompletionStream(ctx context.Context, prompt 
 
 // converseInput builds the Converse request from a prompt and options: messages
 // (downgrading tool blocks to text when no tools are configured), inference
-// config, tools, thinking/effort additional fields, and Claude cache points.
-func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOptions) *bedrockruntime.ConverseInput {
+// config, tools and tool choice, thinking/effort additional fields, and Claude
+// cache points. It fails when a forced tool choice cannot be enforced.
+func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOptions, operation string) (*bedrockruntime.ConverseInput, error) {
+	toolChoice, err := d.bedrockToolChoice(options, operation)
+	if err != nil {
+		return nil, err
+	}
 	messages := prompt.Messages
 	if len(options.Tools) == 0 && bedrockMessagesContainToolBlocks(messages) {
 		messages = convertBedrockToolBlocksToText(messages)
@@ -784,16 +796,16 @@ func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOpt
 		ServiceTier:     bedrockServiceTier(options.ModelOptions),
 	}
 	if len(options.Tools) > 0 {
-		input.ToolConfig = &brtypes.ToolConfiguration{Tools: bedrockTools(options.Tools)}
+		input.ToolConfig = &brtypes.ToolConfiguration{Tools: bedrockTools(options.Tools), ToolChoice: toolChoice.choice}
 	}
-	additional := bedrockAdditionalFields(options)
+	additional := bedrockAdditionalFields(options, toolChoice.disableClaudeThinking)
 	if len(additional) > 0 {
 		input.AdditionalModelRequestFields = brdoc.NewLazyDocument(additional)
 	}
 	if strings.Contains(strings.ToLower(options.Model), "claude") {
 		applyBedrockClaudeCache(input, options)
 	}
-	return input
+	return input, nil
 }
 
 // bedrockServiceTier returns the Converse service tier for the service_tier
@@ -809,8 +821,11 @@ func bedrockServiceTier(options map[string]any) *brtypes.ServiceTier {
 
 // converseStreamInput builds a ConverseStream request by copying the fields of
 // the equivalent Converse request.
-func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options ExecutionOptions) *bedrockruntime.ConverseStreamInput {
-	converse := d.converseInput(prompt, options)
+func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options ExecutionOptions) (*bedrockruntime.ConverseStreamInput, error) {
+	converse, err := d.converseInput(prompt, options, "stream")
+	if err != nil {
+		return nil, err
+	}
 	return &bedrockruntime.ConverseStreamInput{
 		ModelId:                      converse.ModelId,
 		Messages:                     converse.Messages,
@@ -821,7 +836,7 @@ func (d *BedrockDriver) converseStreamInput(prompt bedrockPrompt, options Execut
 		RequestMetadata:              converse.RequestMetadata,
 		OutputConfig:                 converse.OutputConfig,
 		ServiceTier:                  converse.ServiceTier,
-	}
+	}, nil
 }
 
 // bedrockConversationInput merges the new prompt into any prior conversation
@@ -1428,11 +1443,15 @@ func bedrockInferenceConfig(options map[string]any) *brtypes.InferenceConfigurat
 // thinking/reasoning config (explicit budget vs. adaptive effort vs. disabled,
 // including the 128k output beta for claude-3-7-sonnet), top_k (when thinking is
 // off and the model permits it), and reasoning_effort for non-Claude models.
-func bedrockAdditionalFields(options ExecutionOptions) map[string]any {
+func bedrockAdditionalFields(options ExecutionOptions, disableClaudeThinking bool) map[string]any {
 	out := map[string]any{}
 	claude := strings.Contains(strings.ToLower(options.Model), "claude")
 	thinkingActive := false
-	if claude && isClaudeVersionGTE(options.Model, 3, 7) {
+	if disableClaudeThinking {
+		// A forced tool turn: Bedrock permits only auto/none tool choice while
+		// thinking is active, so this turn runs without thinking or effort.
+		out["reasoning_config"] = map[string]any{"type": "disabled"}
+	} else if claude && isClaudeVersionGTE(options.Model, 3, 7) {
 		// Claude thinking fields are passed as additional model request fields in
 		// Bedrock Converse, not as normal inference config fields. Explicit budgets
 		// take priority over adaptive effort-based thinking.
