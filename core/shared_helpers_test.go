@@ -144,6 +144,10 @@ func TestRetryableAndGenericErrorHelpers(t *testing.T) {
 	if v := RetryableFromStatusAndMessage(0, "plain error"); v != nil {
 		t.Fatalf("plain retryable = %#v", v)
 	}
+	// Mirrors the TS client's invalid_grant classification test.
+	if v := RetryableFromStatusAndMessage(0, "Error code invalid_grant: Error connecting to the given credential's issuer."); v == nil || *v {
+		t.Fatalf("invalid_grant retryable = %#v", v)
+	}
 	err := FormatGenericError(assertionError("boom"), LlumiverseErrorContext{Provider: ProviderOpenAI, Model: "m", Operation: "execute"})
 	llumiErr, ok := err.(*LlumiverseError)
 	if !ok {

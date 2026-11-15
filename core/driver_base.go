@@ -140,6 +140,11 @@ func retryableFromStatusAndMessage(code int, msg string) *bool {
 	if strings.Contains(lower, "overload") || strings.Contains(lower, "throttl") {
 		return BoolPtr(true)
 	}
+	// Explicit auth failures are never retried, even without a numeric status
+	// (for example an OAuth invalid_grant from a credential's token issuer).
+	if strings.Contains(lower, "invalid_grant") || strings.Contains(lower, "credential's issuer") {
+		return BoolPtr(false)
+	}
 	if code == 408 || code == 429 || code == 529 || code >= 500 {
 		return BoolPtr(true)
 	}
