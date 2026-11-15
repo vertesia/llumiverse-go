@@ -128,6 +128,10 @@ func formatGeminiError(err error, model string, operation string) error {
 		return err
 	}
 	context := LlumiverseErrorContext{Provider: ProviderVertexAI, Model: model, Operation: operation}
+	var mediaErr *geminiInlineMediaLimitError
+	if errors.As(err, &mediaErr) {
+		return newLlumiverseError(mediaErr.Error(), ptr(false), context, err, mediaErr.StatusCode(), "GeminiInlineMediaLimitError")
+	}
 	var retrieveErr *oauth2.RetrieveError
 	if errors.As(err, &retrieveErr) {
 		code := 0
@@ -156,6 +160,22 @@ func formatGeminiError(err error, model string, operation string) error {
 	// CANCELLED counts even when the message does not repeat it.
 	formatted := newLlumiverseError(fmt.Sprintf("[%d] %s", code, message), geminiErrorRetryable(code, err.Error()), context, err, code, name)
 	return withVertexStorageHint(formatted)
+}
+
+// formatPromptError classifies an error that Execute or Stream returns before a
+// request is sent, most often one raised while building the prompt (an inline
+// media cap, an unusable conversation). As the TS client does, it goes through the
+// model's error formatter instead of surfacing as an unclassified failure. Errors
+// already classified pass through.
+func (d *VertexAIDriver) formatPromptError(err error, model string, operation string) error {
+	if err == nil {
+		return nil
+	}
+	var llumiErr *LlumiverseError
+	if errors.As(err, &llumiErr) {
+		return err
+	}
+	return d.formatError(err, model, operation)
 }
 
 // withVertexStorageHint appends the bucket-permission hint to a 403 that names

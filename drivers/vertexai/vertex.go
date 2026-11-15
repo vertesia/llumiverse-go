@@ -165,6 +165,7 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 	prompt := geminiPrompt{System: &geminiContent{Role: "user"}}
 	var safety []geminiContent
 	callNamesByID := geminiFunctionCallNamesByID(geminiStoredContents(options.Conversation))
+	budget := newGeminiInlineBudget(options.Conversation)
 	for _, segment := range segments {
 		switch segment.Role {
 		case PromptRoleNegative, PromptRoleMask:
@@ -182,6 +183,16 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 			}
 			// Gemini thinking models require the thoughtSignature that arrived
 			// with the tool call to be echoed on the matching functionResponse.
+			// Media attached to a tool result (an image the tool rendered, for
+			// example) travels as functionResponse parts, so the model sees it.
+			var responseParts []geminiFunctionMediaPart
+			for _, file := range segment.Files {
+				part, err := geminiMediaPart(ctx, file, budget)
+				if err != nil {
+					return geminiPrompt{}, err
+				}
+				responseParts = append(responseParts, part)
+			}
 			id, name := resolveGeminiFunctionResponseTarget(segment.ToolUseID, callNamesByID)
 			prompt.Contents = append(prompt.Contents, geminiContent{
 				Role: "user",
@@ -190,6 +201,7 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 						ID:       id,
 						Name:     name,
 						Response: formatGeminiFunctionResponse(segment.Content),
+						Parts:    responseParts,
 					},
 					ThoughtSignature: segment.ThoughtSignature,
 				}},
@@ -200,7 +212,7 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 				parts = append(parts, geminiPart{Text: segment.Content})
 			}
 			for _, file := range segment.Files {
-				part, err := d.geminiFilePart(ctx, file)
+				part, err := d.geminiFilePart(ctx, file, budget)
 				if err != nil {
 					return geminiPrompt{}, err
 				}
@@ -241,16 +253,14 @@ func (d *VertexAIDriver) formatGeminiPrompt(ctx context.Context, segments []Prom
 }
 
 // geminiFilePart turns a file into a part: a GCS URL is passed through as
-// fileData (kept in storage), otherwise the bytes are inlined as base64 inlineData.
-func (d *VertexAIDriver) geminiFilePart(ctx context.Context, file DataSource) (geminiPart, error) {
-	if uri, err := file.URL(ctx); err == nil && isVertexGCSURL(uri) {
-		return geminiPart{FileData: &geminiFileData{FileURI: uri, MIMEType: file.MIMEType()}}, nil
-	}
-	data, err := dataSourceToBase64(ctx, file)
+// fileData (kept in storage), otherwise the bytes are inlined as base64
+// inlineData within the request's inline budget.
+func (d *VertexAIDriver) geminiFilePart(ctx context.Context, file DataSource, budget *geminiInlineBudget) (geminiPart, error) {
+	media, err := geminiMediaPart(ctx, file, budget)
 	if err != nil {
 		return geminiPart{}, err
 	}
-	return geminiPart{InlineData: &geminiInlineData{Data: data, MIMEType: file.MIMEType()}}, nil
+	return geminiPart{InlineData: media.InlineData, FileData: media.FileData}, nil
 }
 
 // isVertexGCSURL reports whether a URI points at Google Cloud Storage and can be
@@ -357,13 +367,15 @@ func optionFloatValue(options map[string]any, key string) any {
 // Execute runs a single non-streaming completion against Gemini, Imagen, or a
 // Claude partner model depending on the requested model.
 func (d *VertexAIDriver) Execute(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (*ExecutionResponse, error) {
-	return executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
+	resp, err := executeWithPrompt(ctx, d, segments, options, d.requestTextCompletion)
+	return resp, d.formatPromptError(err, options.Model, "execute")
 }
 
 // Stream runs a streaming completion against Gemini or a Claude partner model
 // (Imagen does not support streaming).
 func (d *VertexAIDriver) Stream(ctx context.Context, segments []PromptSegment, options ExecutionOptions) (CompletionStream, error) {
-	return streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	stream, err := streamWithPrompt(ctx, d, segments, options, d.requestTextCompletionStream)
+	return stream, d.formatPromptError(err, options.Model, "stream")
 }
 
 // requestTextCompletion routes a non-streaming request by model to the Imagen,

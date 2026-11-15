@@ -32,6 +32,18 @@ func processGeminiPartsForConversation(parts []geminiPart, options ExecutionOpti
 			out = append(out, geminiPart{Text: conversationImagePlaceholder})
 			continue
 		}
+		if part.FunctionResponse != nil && stripMedia && len(part.FunctionResponse.Parts) > 0 {
+			// A function response part cannot hold text, so expired inline
+			// attachments are dropped; Cloud Storage references are kept.
+			response := *part.FunctionResponse
+			response.Parts = nil
+			for _, media := range part.FunctionResponse.Parts {
+				if media.InlineData == nil {
+					response.Parts = append(response.Parts, media)
+				}
+			}
+			part.FunctionResponse = &response
+		}
 		if part.Text != "" {
 			part.Text = core.ProcessConversationText(part.Text, options, stripHeartbeats)
 		}

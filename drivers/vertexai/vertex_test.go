@@ -1011,14 +1011,14 @@ func TestVertexGeminiPartsAndResponseHelpers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	filePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", URI: "gs://bucket/image.png"})
+	filePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", URI: "gs://bucket/image.png"}, &geminiInlineBudget{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if filePart.FileData == nil || filePart.FileData.FileURI != "gs://bucket/image.png" {
 		t.Fatalf("file data part = %#v", filePart)
 	}
-	inlinePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", Data: []byte("img")})
+	inlinePart, err := driver.geminiFilePart(context.Background(), BytesDataSource{FileName: "image.png", MIME: "image/png", Data: []byte("img")}, &geminiInlineBudget{})
 	if err != nil {
 		t.Fatal(err)
 	}

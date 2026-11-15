@@ -47,6 +47,19 @@ func formatGeminiPartForDebug(part geminiPart) geminiPart {
 		inline.Data = core.TruncateBinaryForDebug(inline.Data)
 		part.InlineData = &inline
 	}
+	if part.FunctionResponse != nil && len(part.FunctionResponse.Parts) > 0 {
+		response := *part.FunctionResponse
+		response.Parts = make([]geminiFunctionMediaPart, len(part.FunctionResponse.Parts))
+		for i, media := range part.FunctionResponse.Parts {
+			if media.InlineData != nil && media.InlineData.Data != "" {
+				inline := *media.InlineData
+				inline.Data = core.TruncateBinaryForDebug(inline.Data)
+				media.InlineData = &inline
+			}
+			response.Parts[i] = media
+		}
+		part.FunctionResponse = &response
+	}
 	return part
 }
 
