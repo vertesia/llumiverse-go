@@ -782,7 +782,7 @@ func (d *BedrockDriver) converseInput(prompt bedrockPrompt, options ExecutionOpt
 	if err != nil {
 		return nil, err
 	}
-	messages := prompt.Messages
+	messages := relocateBedrockToolImages(prompt.Messages, options.Model)
 	if len(options.Tools) == 0 && bedrockMessagesContainToolBlocks(messages) {
 		messages = convertBedrockToolBlocksToText(messages)
 	}

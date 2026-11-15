@@ -93,6 +93,67 @@ func bedrockOutputConfig(options ExecutionOptions) *brtypes.OutputConfig {
 	}}
 }
 
+// relocateBedrockToolImages moves images out of tool results into ordinary
+// user content for models that only accept images there. AWS documents nested
+// tool-result images only for Claude and Nova; other vision models (GPT, Pixtral,
+// ...) would not see them. Each image follows a "Image from tool result <id>:"
+// label after all the tool results, so parallel tool calls stay together, and an
+// image-only result keeps a text block so its tool pairing stays valid. The
+// messages passed in are not modified: the stored conversation keeps its shape.
+func relocateBedrockToolImages(messages []brtypes.Message, model string) []brtypes.Message {
+	if strings.Contains(model, "anthropic.claude") || strings.Contains(model, "amazon.nova") {
+		return messages
+	}
+	out := make([]brtypes.Message, 0, len(messages))
+	for _, message := range messages {
+		if message.Role != brtypes.ConversationRoleUser {
+			out = append(out, message)
+			continue
+		}
+		var attachments []brtypes.ContentBlock
+		content := make([]brtypes.ContentBlock, 0, len(message.Content))
+		for _, block := range message.Content {
+			result, ok := block.(*brtypes.ContentBlockMemberToolResult)
+			if !ok || !bedrockToolResultHasImage(result.Value.Content) {
+				content = append(content, block)
+				continue
+			}
+			remaining := make([]brtypes.ToolResultContentBlock, 0, len(result.Value.Content))
+			for _, part := range result.Value.Content {
+				if image, ok := part.(*brtypes.ToolResultContentBlockMemberImage); ok {
+					attachments = append(attachments,
+						&brtypes.ContentBlockMemberText{Value: "Image from tool result " + aws.ToString(result.Value.ToolUseId) + ":"},
+						&brtypes.ContentBlockMemberImage{Value: image.Value},
+					)
+					continue
+				}
+				remaining = append(remaining, part)
+			}
+			if len(remaining) == 0 {
+				remaining = append(remaining, &brtypes.ToolResultContentBlockMemberText{Value: "See the attached tool-result image(s)."})
+			}
+			relocated := result.Value
+			relocated.Content = remaining
+			content = append(content, &brtypes.ContentBlockMemberToolResult{Value: relocated})
+		}
+		if len(attachments) > 0 {
+			message.Content = append(content, attachments...)
+		}
+		out = append(out, message)
+	}
+	return out
+}
+
+// bedrockToolResultHasImage reports whether tool-result content carries an image.
+func bedrockToolResultHasImage(content []brtypes.ToolResultContentBlock) bool {
+	for _, part := range content {
+		if _, ok := part.(*brtypes.ToolResultContentBlockMemberImage); ok {
+			return true
+		}
+	}
+	return false
+}
+
 // bedrockHasToolResult reports whether content carries a toolResult block.
 func bedrockHasToolResult(content []brtypes.ContentBlock) bool {
 	for _, block := range content {
