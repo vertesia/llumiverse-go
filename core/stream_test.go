@@ -317,3 +317,22 @@ func TestChannelStreamCapturesServiceTier(t *testing.T) {
 		t.Fatalf("ServiceTier = %q", got)
 	}
 }
+
+// Mirrors the TS client's "preserves terminal usage on a partial completion when the provider
+// stream fails": usage reported before a terminal error stays on the completion.
+func TestChannelStreamKeepsUsageReportedBeforeAnError(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(10), PromptCached: Tokens(4), PromptNew: Tokens(6), Result: Tokens(2), Total: Tokens(12)}}}
+	ch <- StreamItem{Err: errors.New("provider failed after usage")}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err == nil || err.Error() != "provider failed after usage" {
+		t.Fatalf("err = %v", err)
+	}
+	usage := stream.Completion().TokenUsage
+	if usage == nil || Count(usage.Prompt) != 10 || Count(usage.PromptCached) != 4 || Count(usage.Result) != 2 || Count(usage.Total) != 12 {
+		t.Fatalf("TokenUsage = %#v", usage)
+	}
+}

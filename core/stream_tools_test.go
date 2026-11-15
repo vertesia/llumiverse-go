@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -27,13 +28,47 @@ func TestFinalizeStreamingToolUse(t *testing.T) {
 		}
 	})
 
-	t.Run("rejects malformed arguments when the stream was not cut off", func(t *testing.T) {
+	t.Run("does not let an empty placeholder erase accumulated argument bytes", func(t *testing.T) {
+		var tool ToolUseChunk
+		for _, fragment := range []ToolUseChunk{
+			{ID: "write", ToolName: "write_artifact", ToolInput: `{"name"`},
+			{ID: "write", ToolInput: map[string]any{}},
+			{ID: "write", ToolInput: ""},
+			{ID: "write", ToolInput: `:"report"}`},
+		} {
+			accumulateToolUseChunk(&tool, fragment)
+		}
+		if tool.ToolInput != `{"name":"report"}` {
+			t.Fatalf("ToolInput = %#v", tool.ToolInput)
+		}
+	})
+
+	t.Run("normalizes empty streamed arguments for parameterless tools", func(t *testing.T) {
+		tools, err := FinalizeStreamingToolUse([]ToolUseChunk{
+			{ID: "inspect", ToolName: "inspect_status", ToolInput: ""},
+		}, "tool_use", streamToolTestContext)
+		want := []ToolUse{{ID: "inspect", ToolName: "inspect_status", ToolInput: &JSONObject{}}}
+		if err != nil || !reflect.DeepEqual(tools, want) {
+			t.Fatalf("tools = %#v, err = %v", tools, err)
+		}
+	})
+
+	t.Run("rejects malformed arguments with a stable non-retryable identity", func(t *testing.T) {
 		_, err := FinalizeStreamingToolUse([]ToolUseChunk{
 			{ID: "write", ToolName: "write_artifact", ToolInput: `{`},
 		}, "", streamToolTestContext)
 		var llumiErr *LlumiverseError
-		if !errors.As(err, &llumiErr) {
+		if !errors.As(err, &llumiErr) || !IsMalformedStreamingToolArguments(err) {
 			t.Fatalf("err = %v", err)
+		}
+		if llumiErr.Name != MalformedStreamingToolArgumentsErrorName {
+			t.Fatalf("Name = %q", llumiErr.Name)
+		}
+		if !strings.Contains(llumiErr.Message, `streamed tool "write_artifact" (finish_reason=unknown, argument_chars=1)`) {
+			t.Fatalf("Message = %q", llumiErr.Message)
+		}
+		if llumiErr.Retryable == nil || *llumiErr.Retryable {
+			t.Fatalf("Retryable = %#v", llumiErr.Retryable)
 		}
 		want := LlumiverseErrorContext{Provider: ProviderBedrock, Model: "anthropic.claude-sonnet-4-5", Operation: "stream"}
 		if llumiErr.Context != want {
