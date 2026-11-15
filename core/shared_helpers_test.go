@@ -1,7 +1,9 @@
 package core
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
@@ -143,6 +145,31 @@ func TestRetryableAndGenericErrorHelpers(t *testing.T) {
 	}
 	if v := RetryableFromStatusAndMessage(0, "plain error"); v != nil {
 		t.Fatalf("plain retryable = %#v", v)
+	}
+	// Mirrors the TS client's transport abort and deadline-exceeded classification test.
+	for _, tc := range []struct {
+		code int
+		msg  string
+		want bool
+	}{
+		{0, "This operation was aborted", true},
+		{499, "This operation was aborted", true},
+		{400, "Deadline expired before operation could complete", true},
+		{504, "[504] DEADLINE_EXCEEDED", true},
+		{400, "Invalid argument", false},
+	} {
+		if v := RetryableFromStatusAndMessage(tc.code, tc.msg); v == nil || *v != tc.want {
+			t.Fatalf("RetryableFromStatusAndMessage(%d, %q) = %#v, want %v", tc.code, tc.msg, v, tc.want)
+		}
+	}
+	deadlineErr := FormatGenericError(fmt.Errorf("provider call: %w", context.DeadlineExceeded), LlumiverseErrorContext{Provider: ProviderOpenAI})
+	if v := deadlineErr.(*LlumiverseError).Retryable; v == nil || !*v {
+		t.Fatalf("deadline exceeded retryable = %#v", v)
+	}
+	// A caller's own cancellation is not classified.
+	canceledErr := FormatGenericError(context.Canceled, LlumiverseErrorContext{Provider: ProviderOpenAI})
+	if v := canceledErr.(*LlumiverseError).Retryable; v != nil {
+		t.Fatalf("context canceled retryable = %#v", v)
 	}
 	// Mirrors the TS client's invalid_grant classification test.
 	if v := RetryableFromStatusAndMessage(0, "Error code invalid_grant: Error connecting to the given credential's issuer."); v == nil || *v {

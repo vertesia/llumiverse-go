@@ -98,12 +98,17 @@ func streamWithPrompt(ctx context.Context, driver Driver, segments []PromptSegme
 // formatGenericError wraps a provider error in a LlumiverseError, attaching the
 // request context, an extracted HTTP status/type name, and a retryability
 // classification derived from the status and message.
-func formatGenericError(err error, context LlumiverseErrorContext) error {
+func formatGenericError(err error, errContext LlumiverseErrorContext) error {
 	if err == nil {
 		return nil
 	}
 	code, name := errorStatusAndName(err)
-	return NewLlumiverseError(err.Error(), retryableFromStatusAndMessage(code, err.Error()), context, err, code, name)
+	retryable := retryableFromStatusAndMessage(code, err.Error())
+	if errors.Is(err, context.DeadlineExceeded) {
+		// An exceeded deadline is transient whatever the wrapping error says.
+		retryable = BoolPtr(true)
+	}
+	return NewLlumiverseError(err.Error(), retryable, errContext, err, code, name)
 }
 
 // statusCoder is implemented by errors that carry an HTTP status code, such as
@@ -138,6 +143,12 @@ func retryableFromStatusAndMessage(code int, msg string) *bool {
 		return BoolPtr(true)
 	}
 	if strings.Contains(lower, "overload") || strings.Contains(lower, "throttl") {
+		return BoolPtr(true)
+	}
+	// A transport-level abort (dropped connection, request timeout) or an exceeded
+	// deadline is transient, even when the provider reports it under a 4xx status.
+	// A caller's own cancellation reads "context canceled" and stays unclassified.
+	if strings.Contains(lower, "aborted") || strings.Contains(lower, "deadline") {
 		return BoolPtr(true)
 	}
 	// Explicit auth failures are never retried, even without a numeric status
