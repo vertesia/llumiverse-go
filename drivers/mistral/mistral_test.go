@@ -271,6 +271,13 @@ func TestMistralListModelsAndEmbeddings(t *testing.T) {
 	if len(models) != 2 || models[0].Name != "Mistral Large" || models[1].ID != "ft:open-mistral-7b:abc" || *models[0].Description != "Flagship" {
 		t.Fatalf("models = %+v", models)
 	}
+	// Modalities and tool support come from the capability catalogue: Large takes images, Mistral 7B does not.
+	if large := models[0]; strings.Join(*large.InputModalities, ",") != "text,image" || !*large.IsMultimodal || !*large.ToolSupport {
+		t.Fatalf("large = %+v", large)
+	}
+	if small := models[1]; strings.Join(*small.InputModalities, ",") != "text" || *small.IsMultimodal {
+		t.Fatalf("7b = %+v", small)
+	}
 	result, err := driver.GenerateEmbeddings(context.Background(), common.EmbeddingsOptions{Inputs: []common.EmbeddingInput{{Text: "a"}, {Text: "b"}}})
 	if err != nil {
 		t.Fatal(err)

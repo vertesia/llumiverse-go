@@ -130,6 +130,13 @@ func TestXAIListModels(t *testing.T) {
 	if *image.Type != "image" || *image.CanStream || *image.Version != "1.0" || *image.Description != "grok-imagine-image by xai" {
 		t.Fatalf("image model = %+v", image)
 	}
+	// Modalities and tool support come from the capability catalogue.
+	if grok := models[0]; strings.Join(*grok.Tags, ",") != "i:text,i:image,o:text" || !*grok.ToolSupport || !*grok.IsMultimodal {
+		t.Fatalf("grok = %+v", grok)
+	}
+	if strings.Join(*image.Tags, ",") != "i:text,i:image,o:image" || *image.ToolSupport || !*image.IsMultimodal {
+		t.Fatalf("image tags = %v", *image.Tags)
+	}
 
 	// One listing failing still lists the other.
 	onlyLanguage, _ := newTestDriver(t, map[string]fakehttp.Response{

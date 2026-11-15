@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/common"
 	"github.com/vertesia/llumiverse-go/core"
 	"github.com/vertesia/llumiverse-go/drivers/internal/chatcompat"
@@ -215,10 +216,6 @@ const (
 	maxModelPages  = 20
 )
 
-// dedicatedModelPattern matches the model families that need a dedicated endpoint rather than chat
-// completions, which listings leave out with their output modalities.
-var dedicatedModelPattern = regexp.MustCompile(`(?i)(?:^|[-_./:])(?:moderation|whisper|transcribe|tts|realtime)(?:[-_./:]|$)`)
-
 // ListModels lists the OpenRouter models that answer in text, with the modalities and tool support the listing
 // reports, leaving out embedding and dedicated-endpoint models.
 func (d *OpenRouterDriver) ListModels(ctx context.Context, _ *common.ModelSearchPayload) ([]common.AIModel, error) {
@@ -238,21 +235,21 @@ func (d *OpenRouterDriver) ListModels(ctx context.Context, _ *common.ModelSearch
 			if !isChatModel(model) {
 				continue
 			}
-			input := append([]string(nil), model.Architecture.InputModalities...)
-			output := append([]string(nil), model.Architecture.OutputModalities...)
+			metadata := capability.ResolveListingMetadata(model.ID, common.ProviderOpenRouter,
+				model.Architecture.InputModalities, model.Architecture.OutputModalities)
 			owner, _, _ := strings.Cut(model.ID, "/")
 			aiModel := common.AIModel{
-				ID:               model.ID,
-				Name:             model.Name,
-				Provider:         string(common.ProviderOpenRouter),
-				Owner:            &owner,
-				Type:             ptr(wire.ModelTypeText),
-				CanStream:        ptr(true),
-				IsMultimodal:     ptr(len(input) > 1),
-				InputModalities:  &input,
-				OutputModalities: &output,
-				ToolSupport:      ptr(contains(model.SupportedParameters, "tools")),
+				ID:           model.ID,
+				Name:         model.Name,
+				Provider:     string(common.ProviderOpenRouter),
+				Owner:        &owner,
+				Type:         ptr(wire.ModelTypeText),
+				CanStream:    ptr(true),
+				IsMultimodal: ptr(len(metadata.InputModalities) > 1),
+				// The catalogue's tool support wins; the listing's supported parameters fill in for unknown models.
+				ToolSupport: ptr(contains(model.SupportedParameters, "tools")),
 			}
+			metadata.Apply(&aiModel)
 			if aiModel.Name == "" {
 				aiModel.Name = model.ID
 			}
@@ -270,16 +267,13 @@ func (d *OpenRouterDriver) ListModels(ctx context.Context, _ *common.ModelSearch
 }
 
 func isChatModel(model openRouterModel) bool {
-	if !contains(model.Architecture.OutputModalities, "text") || chatcompat.IsEmbeddingModelID(model.ID) ||
-		dedicatedModelPattern.MatchString(model.ID) {
-		return false
-	}
-	for _, modality := range append(append([]string(nil), model.Architecture.InputModalities...), model.Architecture.OutputModalities...) {
-		if chatcompat.IsEmbeddingModality(modality) {
-			return false
-		}
-	}
-	return true
+	return contains(model.Architecture.OutputModalities, "text") &&
+		!capability.IsEmbeddingModel(capability.Listing{
+			ID:               model.ID,
+			InputModalities:  model.Architecture.InputModalities,
+			OutputModalities: model.Architecture.OutputModalities,
+		}, common.ProviderOpenRouter) &&
+		!capability.IsDedicatedInferenceModel(model.ID, common.ProviderOpenRouter)
 }
 
 // ValidateConnection checks the API key against a one-model listing.

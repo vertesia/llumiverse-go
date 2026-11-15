@@ -176,17 +176,28 @@ func TestOpenRouterListModels(t *testing.T) {
 		{"id":"openai/text-embedding-3-large","name":"Embeddings","architecture":{"input_modalities":["text"],"output_modalities":["embeddings"]},"supported_parameters":[]},
 		{"id":"google/gemini-image","name":"Image","architecture":{"input_modalities":["text"],"output_modalities":["image"]},"supported_parameters":[]},
 		{"id":"openai/gpt-4o-mini-tts","name":"TTS","architecture":{"input_modalities":["text"],"output_modalities":["text","audio"]},"supported_parameters":[]},
-		{"id":"meta-llama/llama-4","name":"Llama 4","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["max_tokens"]}]}`}})
+		{"id":"meta-llama/llama-4","name":"Llama 4","architecture":{"input_modalities":["text"],"output_modalities":["text"]},"supported_parameters":["max_tokens"]},
+		{"id":"acme/widget-1","name":"Widget","architecture":{"input_modalities":["text","speech"],"output_modalities":["text"]},"supported_parameters":["tools"]}]}`}})
 	models, err := driver.ListModels(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(models) != 2 || models[0].ID != "meta-llama/llama-4" || models[1].ID != "openai/gpt-5.5" {
+	if len(models) != 3 || models[0].ID != "acme/widget-1" || models[1].ID != "meta-llama/llama-4" || models[2].ID != "openai/gpt-5.5" {
 		t.Fatalf("models = %+v", models)
 	}
-	gpt := models[1]
-	if !*gpt.ToolSupport || !*gpt.IsMultimodal || *gpt.Owner != "openai" || *gpt.Description != "Frontier model" || *models[0].ToolSupport {
+	gpt := models[2]
+	if !*gpt.ToolSupport || !*gpt.IsMultimodal || *gpt.Owner != "openai" || *gpt.Description != "Frontier model" {
 		t.Fatalf("gpt = %+v", gpt)
+	}
+	// The catalogue knows Llama 4 calls tools and takes images, whatever the listing says.
+	llama := models[1]
+	if !*llama.ToolSupport || strings.Join(*llama.InputModalities, ",") != "text,image" {
+		t.Fatalf("llama = %+v", llama)
+	}
+	// An unknown model keeps the listed modalities (speech read as audio) and supported parameters.
+	widget := models[0]
+	if !*widget.ToolSupport || strings.Join(*widget.InputModalities, ",") != "text,audio" || strings.Join(*widget.OutputModalities, ",") != "text" {
+		t.Fatalf("widget = %+v", widget)
 	}
 	if query := server.Last(t, "/api/v1/models").Query; query != "limit=1000" {
 		t.Fatalf("query = %q", query)

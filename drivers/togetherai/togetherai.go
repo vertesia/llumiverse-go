@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/common"
 	"github.com/vertesia/llumiverse-go/drivers/internal/chatcompat"
 	"github.com/vertesia/llumiverse-go/drivers/openai"
@@ -127,12 +128,11 @@ func flattenContent(parts []map[string]any) string {
 	return strings.Join(texts, "\n")
 }
 
-// hasReasoningToggleOnly reports the hybrid reasoning models whose only reasoning control is switching it off:
-// Together serves Qwen 3.5 to 3.7 (but not the Coder models) with thinking on by default; Qwen 3.8 takes efforts.
+// hasReasoningToggleOnly reports the hybrid reasoning models whose only reasoning control the catalogue lists is
+// switching it off: Together serves Qwen 3.5 to 3.7 (but not the Coder models) with thinking on by default.
 func hasReasoningToggleOnly(model string) bool {
-	model = strings.ToLower(model)
-	return strings.Contains(model, "qwen") && !strings.Contains(model, "coder") &&
-		chatcompat.IsQwenVersionGTE(model, 3, 5) && !chatcompat.IsQwenVersionGTE(model, 3, 8)
+	levels := capability.ResolveProfile(model, common.ProviderTogetherAI).ReasoningEffortLevels
+	return len(levels) == 1 && levels[0] == "none"
 }
 
 // normalizeResponse maps Together's eos finish reason to stop, and moves the usage some models (Kimi K3) report
@@ -214,24 +214,17 @@ func (d *TogetherAIDriver) ListModels(ctx context.Context, _ *common.ModelSearch
 			if name == "" {
 				name = id
 			}
-			input, output := modalities(model.InputModalities), modalities(model.OutputModalities)
 			aiModel := common.AIModel{
-				ID:           id,
-				Name:         name,
-				Provider:     string(common.ProviderTogetherAI),
-				Type:         &modelType,
-				CanStream:    ptr(true),
-				IsMultimodal: ptr(contains(input, "image")),
+				ID:        id,
+				Name:      name,
+				Provider:  string(common.ProviderTogetherAI),
+				Type:      &modelType,
+				CanStream: ptr(true),
 			}
 			if model.Publisher != "" {
 				aiModel.Owner = ptr(model.Publisher)
 			}
-			if len(input) > 0 {
-				aiModel.InputModalities = &input
-			}
-			if len(output) > 0 {
-				aiModel.OutputModalities = &output
-			}
+			capability.ForModel(id, common.ProviderTogetherAI).Apply(&aiModel)
 			models = append(models, aiModel)
 		}
 		if page.NextCursor == "" || len(page.Data) == 0 {
@@ -261,26 +254,6 @@ func togetherModelType(displayType string) wire.ModelType {
 		return wire.ModelTypeEmbedding
 	}
 	return wire.ModelTypeText
-}
-
-// modalities maps catalogue modalities (MODALITY_TEXT) to listing modalities (text).
-func modalities(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if modality := strings.ToLower(strings.TrimPrefix(value, "MODALITY_")); modality != "" {
-			out = append(out, modality)
-		}
-	}
-	return out
-}
-
-func contains(values []string, value string) bool {
-	for _, item := range values {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
 
 func ptr[T any](v T) *T { return &v }

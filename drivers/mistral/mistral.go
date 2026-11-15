@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/vertesia/llumiverse-go/capability"
 	"github.com/vertesia/llumiverse-go/common"
 	"github.com/vertesia/llumiverse-go/core"
 	"github.com/vertesia/llumiverse-go/wire"
@@ -637,7 +638,7 @@ func (d *MistralDriver) ListModels(ctx context.Context, _ *common.ModelSearchPay
 	}
 	models := make([]common.AIModel, 0, len(response.Data))
 	for _, model := range response.Data {
-		if model.ID == "" || strings.Contains(strings.ToLower(model.ID), "embed") {
+		if model.ID == "" || capability.IsEmbeddingModel(capability.Listing{ID: model.ID}, common.ProviderMistralAI) {
 			continue
 		}
 		if model.Capabilities != nil && model.Capabilities.CompletionChat != nil && !*model.Capabilities.CompletionChat {
@@ -659,6 +660,7 @@ func (d *MistralDriver) ListModels(ctx context.Context, _ *common.ModelSearchPay
 		if model.Description != "" {
 			aiModel.Description = ptr(model.Description)
 		}
+		capability.ForModel(model.ID, common.ProviderMistralAI).Apply(&aiModel)
 		models = append(models, aiModel)
 	}
 	return models, nil
