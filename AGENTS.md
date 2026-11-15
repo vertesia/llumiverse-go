@@ -20,6 +20,7 @@ go build ./...        # must pass
 go vet ./...          # must pass
 go test ./...         # unit tests; no network required (mocks/fakes)
 go test -cover ./...
+go -C gen vet ./... && go -C gen test ./...   # the generator is its own module
 gofmt -l .            # MUST be empty — CI fails on any unformatted file
 go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest run
 ```

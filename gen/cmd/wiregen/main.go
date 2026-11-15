@@ -41,7 +41,7 @@ func run(in, config string) error {
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(tmp)
+	defer func() { _ = os.RemoveAll(tmp) }()
 	specPath := filepath.Join(tmp, "llumiverse.openapi.json")
 	if err := os.WriteFile(specPath, spec, 0o600); err != nil {
 		return err
@@ -94,13 +94,11 @@ func toOpenAPI(raw []byte) ([]byte, error) {
 
 // downgrade rewrites JSON Schema 2020-12 keywords into their OpenAPI 3.0 spelling. Each rewrite
 // keeps the meaning; only the spelling changes.
+//
+// It walks subschemas only (see eachSubschema), never the maps that hold them: under `properties`
+// the keys are field names, so a field named `const` or `propertyNames` is a field, not a keyword.
 func downgrade(node any) any {
 	switch n := node.(type) {
-	case []any:
-		for i, child := range n {
-			n[i] = downgrade(child)
-		}
-		return n
 	case map[string]any:
 		if ref, ok := n["$ref"].(string); ok {
 			n["$ref"] = strings.Replace(ref, "#/$defs/", "#/components/schemas/", 1)
@@ -155,12 +153,42 @@ func downgrade(node any) any {
 				n["format"] = "double"
 			}
 		}
+		// OpenAPI 3.0 has no propertyNames; the generated code does not validate keys anyway.
 		delete(n, "propertyNames")
-		for key, child := range n {
-			n[key] = downgrade(child)
-		}
+		eachSubschema(n, downgrade)
 		return n
 	default:
 		return node
+	}
+}
+
+// Keywords whose value is one subschema, a map of name to subschema, or a list of subschemas.
+var (
+	schemaKeywords     = []string{"items", "additionalProperties", "contains", "not", "if", "then", "else"}
+	schemaMapKeywords  = []string{"properties", "patternProperties", "$defs", "definitions", "dependentSchemas"}
+	schemaListKeywords = []string{"anyOf", "oneOf", "allOf", "prefixItems"}
+)
+
+// eachSubschema replaces every direct subschema of node with visit's result. Values of other keywords
+// (enum, default, examples, discriminator, ...) are data and are left alone.
+func eachSubschema(node map[string]any, visit func(any) any) {
+	for _, key := range schemaKeywords {
+		if child, ok := node[key].(map[string]any); ok {
+			node[key] = visit(child)
+		}
+	}
+	for _, key := range schemaMapKeywords {
+		if children, ok := node[key].(map[string]any); ok {
+			for name, child := range children {
+				children[name] = visit(child)
+			}
+		}
+	}
+	for _, key := range schemaListKeywords {
+		if children, ok := node[key].([]any); ok {
+			for i, child := range children {
+				children[i] = visit(child)
+			}
+		}
 	}
 }
