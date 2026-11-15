@@ -165,7 +165,7 @@ func openAIResponsesInput(conversation any, prompt []responseItem, hasTools bool
 	out := make([]responseItem, 0, len(stored)+len(prompt))
 	out = append(out, stored...)
 	out = append(out, cloneItems(prompt)...)
-	out = fixOpenAIOrphanedToolUse(out)
+	out = fixOpenAIOrphanedToolResults(fixOpenAIOrphanedToolUse(out))
 	if !hasTools && openAIResponsesInputHasToolItems(out) {
 		// Stored conversations may include tool call/output items from checkpoint
 		// summaries. If this request has no tools, convert them to text to avoid
@@ -322,6 +322,30 @@ func fixOpenAIOrphanedToolUse(items []responseItem) []responseItem {
 		}
 	}
 	flushPending()
+	return out
+}
+
+// fixOpenAIOrphanedToolResults drops function_call_output items whose call_id
+// has no matching function_call anywhere in the input, as the TS client does.
+// fixOpenAIOrphanedToolUse covers calls left unanswered (a cancelled run); this
+// covers outputs left dangling after their call was dropped (for example by
+// conversation trimming). The Responses API rejects such outputs.
+func fixOpenAIOrphanedToolResults(items []responseItem) []responseItem {
+	calls := map[string]bool{}
+	for _, item := range items {
+		if itemType(item) == "function_call" {
+			calls[stringValue(item["call_id"])] = true
+		}
+	}
+	out := make([]responseItem, 0, len(items))
+	for _, item := range items {
+		if itemType(item) == "function_call_output" {
+			if id := stringValue(item["call_id"]); id == "" || !calls[id] {
+				continue
+			}
+		}
+		out = append(out, item)
+	}
 	return out
 }
 
