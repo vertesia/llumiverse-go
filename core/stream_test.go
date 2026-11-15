@@ -299,3 +299,21 @@ func TestChannelStreamKeepsThoughtsTypedAndMediaDiscrete(t *testing.T) {
 		t.Fatalf("answer text = %q, thoughts must not leak into it", text)
 	}
 }
+
+// Mirrors the TS client's service-tier capture: the tier a chunk reports reaches the completion,
+// and a later chunk without one does not erase it.
+func TestChannelStreamCapturesServiceTier(t *testing.T) {
+	t.Parallel()
+
+	ch := make(chan StreamItem, 2)
+	ch <- StreamItem{Chunk: CompletionChunk{Result: []CompletionResult{NewTextResult("answer")}, FinishReason: "stop", ServiceTier: "priority"}}
+	ch <- StreamItem{Chunk: CompletionChunk{TokenUsage: &ExecutionTokenUsage{Prompt: Tokens(1), Result: Tokens(1)}}}
+	close(ch)
+	stream := NewChannelStream(ch, &ExecutionResponse{}, nil)
+	if err := drainStream(t, stream); err != nil {
+		t.Fatal(err)
+	}
+	if got := stream.Completion().ServiceTier; got != "priority" {
+		t.Fatalf("ServiceTier = %q", got)
+	}
+}

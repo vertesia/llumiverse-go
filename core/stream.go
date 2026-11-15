@@ -100,7 +100,7 @@ func (s *channelStream) Completion() *ExecutionResponse {
 	return s.completion
 }
 
-// applyChunk merges a single chunk's result, tool, usage, and finish-reason
+// applyChunk merges a single chunk's result, tool, usage, finish-reason, and service-tier
 // deltas into the running completion and increments the chunk count.
 func (s *channelStream) applyChunk(chunk CompletionChunk) {
 	// Each provider emits different delta shapes; this is the normalization
@@ -119,6 +119,9 @@ func (s *channelStream) applyChunk(chunk CompletionChunk) {
 	}
 	if chunk.FinishReason != "" {
 		s.completion.FinishReason = chunk.FinishReason
+	}
+	if chunk.ServiceTier != "" {
+		s.completion.ServiceTier = chunk.ServiceTier
 	}
 	s.completion.Chunks++
 }
